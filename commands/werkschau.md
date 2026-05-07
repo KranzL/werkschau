@@ -12,6 +12,8 @@ allowed-tools:
 
 # Werkschau: GitHub Activity Retrospective
 
+> Note: For cron / CI use, run `werkschau report` directly (needs an LLM API key). The slash command is for interactive use inside Claude Code.
+
 Discover every repo each user touched in the window, pull their commits + diff features, then cluster the work into themes and write a per-person narrative with effort estimates calibrated to each person's level.
 
 ## Step 1: Verify setup

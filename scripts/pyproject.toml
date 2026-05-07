@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "werkschau"
-version = "0.2.0"
+version = "0.3.0"
 description = "Audit a developer's GitHub activity and produce a narrative retrospective with effort estimates"
 readme = {text = "Audit GitHub activity and produce a narrative retrospective with effort estimates", content-type = "text/plain"}
 license = "MIT"
@@ -27,6 +27,7 @@ dependencies = [
 [project.optional-dependencies]
 llm = [
     "anthropic>=0.40,<1",
+    "openai>=1.0,<2",
 ]
 dev = [
     "pytest>=8.0,<9",

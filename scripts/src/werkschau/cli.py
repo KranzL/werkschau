@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -125,9 +127,40 @@ def _extract_for_user(
     }
 
 
-@click.group(help="Audit a developer's GitHub activity and produce a narrative retrospective.")
+_GROUP_HELP = """\
+Audit a developer's GitHub activity and produce a narrative retrospective.
+
+\b
+Two ways to run this:
+  /werkschau              -- inside Claude Code / Codex; no API key needed.
+  werkschau report        -- cron / CI; needs ANTHROPIC_API_KEY or OPENAI_API_KEY.
+"""
+
+
+@click.group(help=_GROUP_HELP)
 def main() -> None:
     pass
+
+
+def _require_llm_api_key(provider: str) -> None:
+    scoped = f"WERKSCHAU_{provider.upper()}_API_KEY"
+    generic = f"{provider.upper()}_API_KEY"
+    other = "openai" if provider == "anthropic" else "anthropic"
+
+    if os.environ.get(scoped):
+        return
+    if os.environ.get(generic):
+        click.echo(
+            f"Warning: using {generic}; prefer {scoped} to avoid collisions with Claude Code.",
+            err=True,
+        )
+        return
+    click.echo(
+        f"Missing {scoped}. Set it, run --provider {other}, "
+        f"or use /werkschau inside Claude Code (no key needed).",
+        err=True,
+    )
+    sys.exit(1)
 
 
 @main.command(help="Pull commits + diff features for one or more users across every repo they touched in the window.")
@@ -193,6 +226,57 @@ def extract(
         )
     else:
         click.echo(text)
+
+
+@main.command(help="""Generate the narrative retrospective from a werkschau extract via an LLM.
+For cron / CI. Reads ANTHROPIC_API_KEY or OPENAI_API_KEY (also accepts the
+WERKSCHAU_-prefixed forms). For interactive use, run /werkschau instead.""")
+@click.option("--input", "input_path", type=click.Path(exists=True, dir_okay=False), default=None, help="Path to extract JSON. Reads stdin if omitted.")
+@click.option("--output", "-o", type=click.Path(dir_okay=False), default=None, help="Write markdown narrative here. Default stdout.")
+@click.option("--provider", type=click.Choice(["anthropic", "openai"]), default="anthropic", show_default=True)
+@click.option("--model", default=None, help="Override the provider default model.")
+@click.option("--base-url", "base_url", default=None, help="Override the LLM API base URL (proxy / Bedrock / OpenAI-compatible endpoint).")
+def report(
+    input_path: str | None,
+    output: str | None,
+    provider: str,
+    model: str | None,
+    base_url: str | None,
+) -> None:
+    _require_llm_api_key(provider)
+
+    if input_path:
+        raw = Path(input_path).read_text()
+    else:
+        if sys.stdin.isatty():
+            raise click.UsageError("provide --input or pipe extract JSON on stdin")
+        raw = sys.stdin.read()
+
+    try:
+        extract_data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise click.ClickException(f"input is not valid JSON: {exc}") from exc
+
+    if not isinstance(extract_data, dict) or "users" not in extract_data:
+        raise click.ClickException(
+            "input does not look like a werkschau extract (missing 'users' field)"
+        )
+
+    from .reporter import generate_narrative
+
+    click.echo(f"Generating narrative via {provider}...", err=True)
+    narrative = generate_narrative(
+        extract_data,
+        provider=provider,
+        model=model,
+        base_url=base_url,
+    )
+
+    if output:
+        Path(output).write_text(narrative)
+        click.echo(f"Narrative written to {output}", err=True)
+    else:
+        click.echo(narrative)
 
 
 @main.group(help="Manage saved teams (~/.werkschau/teams/*.toml).")
