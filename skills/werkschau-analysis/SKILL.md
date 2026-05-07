@@ -128,7 +128,7 @@ Key commits:
 
 - Werkschau only counts commit-visible work. Code review, debugging without commits, design discussions, meetings, and pair programming where you weren't the committer are invisible here. This is especially load-bearing for Senior+ engineers.
 - Effort estimates are calibrated guesses, not measurements. Treat per-initiative numbers as ranges, not point values.
-- Discovery is bounded by GitHub's `/users/{user}/events` feed (~90 days, ~300 events). Heavily active users may have older or higher-volume work that did not surface.
+- Discovery unions `/users/{user}/events` (recent, public-only for non-self users) with `/search/commits?author=...` (covers private repos the authenticated user can see). Search is subject to GitHub's indexing lag (commits within the last few minutes may not appear) and a 1000-result cap per query.
 - "Vs. level" tags compare commit volume only. They are not performance assessments. Do not use this report as a primary input to performance management decisions.
 ```
 

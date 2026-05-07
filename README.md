@@ -2,7 +2,7 @@
 
 Audit one or more developers' GitHub activity over a window and produce a narrative retrospective of what they actually worked on, with effort estimates per initiative -- calibrated to each person's level.
 
-Discovers every repo a user touched (including org repos they're not formally listed on) via `/users/{user}/events`, pulls their commits + diffs, clusters the work into themes, and writes a per-person retrospective with comparative output across the team.
+Discovers every repo a user touched (including private org repos and repos they're not formally listed on) by unioning `/users/{user}/events` with `/search/commits?author=...`, pulls their commits + diffs, clusters the work into themes, and writes a per-person retrospective with comparative output across the team.
 
 ## Two entry points
 

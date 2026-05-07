@@ -129,7 +129,7 @@ If `--team <name>` was passed, use `--team <name>` instead of repeated `--user` 
 
 Stream the stderr to the user so they see discovery progress.
 
-If the extractor reports no PushEvent activity for a user, surface that explicitly -- it usually means the window is older than ~90 days, the username is wrong, or that user commits under a different login.
+If the extractor reports no authored commits for a user, surface that explicitly -- it usually means the username is wrong, that user commits under a different login, or your auth doesn't have visibility into the repos they pushed to (search/commits will only return private repos the authenticated user can see).
 
 ## Step 4: Load results
 

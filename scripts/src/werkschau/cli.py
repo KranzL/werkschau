@@ -80,7 +80,7 @@ def _extract_for_user(
     click.echo(f"[{user}] discovering repos", err=True)
     repos = discover_repos(user, since_dt, until_dt)
     if not repos:
-        click.echo(f"[{user}] no PushEvent activity in window", err=True)
+        click.echo(f"[{user}] no authored commits found in window", err=True)
     if len(repos) > max_repos:
         click.echo(f"[{user}] found {len(repos)} repos; truncating to first {max_repos}", err=True)
         repos = repos[:max_repos]
