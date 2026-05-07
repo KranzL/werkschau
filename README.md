@@ -9,6 +9,18 @@ Discovers every repo a user touched (including org repos they're not formally li
 - **`/werkschau` slash command** -- runs inside Claude Code, uses your local `gh` auth, no Anthropic API key needed. Asks you who's on the team, gathers each person's level via `AskUserQuestion`, then Claude analyzes the extracted features in-conversation and writes the report. Saves teams for reuse.
 - **`werkschau analyze` CLI** *(planned)* -- standalone Python that calls the GitHub API and Anthropic API directly. Runs anywhere, including CI / cron.
 
+## Install
+
+Inside Claude Code:
+
+```
+/plugin marketplace add KranzL/werkschau
+/plugin install werkschau@werkschau
+/werkschau
+```
+
+First `/werkschau` invocation sets up a local Python venv on its own. You only need `gh` authenticated (`gh auth login`).
+
 ## Quickstart
 
 ```

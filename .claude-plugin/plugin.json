@@ -1,0 +1,11 @@
+{
+  "name": "werkschau",
+  "version": "0.1.0",
+  "description": "Audit one or more developers' GitHub activity over a window and produce a level-calibrated narrative retrospective with effort estimates per initiative",
+  "author": {
+    "name": "Luke Kranz"
+  },
+  "repository": "https://github.com/KranzL/werkschau",
+  "license": "MIT",
+  "keywords": ["github", "activity-audit", "retrospective", "engineering-management", "developer-productivity"]
+}
