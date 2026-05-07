@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+.venv/
+venv/
+.pytest_cache/
+.env
+.env.*
+!.env.example
+*.log
+.werkschau-cache/
+CLAUDE.md

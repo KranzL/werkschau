@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "werkschau"
+version = "0.1.0"
+description = "Audit a developer's GitHub activity and produce a narrative retrospective with effort estimates"
+readme = {text = "Audit GitHub activity and produce a narrative retrospective with effort estimates", content-type = "text/plain"}
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    {name = "Luke Kranz"}
+]
+keywords = ["github", "git", "activity", "retrospective", "audit", "effort-estimation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development",
+    "Programming Language :: Python :: 3",
+]
+dependencies = [
+    "click>=8.0,<9",
+]
+
+[project.optional-dependencies]
+llm = [
+    "anthropic>=0.40,<1",
+]
+dev = [
+    "pytest>=8.0,<9",
+    "pytest-mock>=3.0,<4",
+]
+all = [
+    "werkschau[llm,dev]",
+]
+
+[project.scripts]
+werkschau = "werkschau.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
