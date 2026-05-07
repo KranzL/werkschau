@@ -2,102 +2,146 @@
 name: werkschau-analysis
 description: >
   Activate when the user asks to audit GitHub activity, summarize what
-  someone worked on, build a weekly retrospective from commits, estimate
-  developer effort from commit history, or mentions werkschau.
-version: 0.1.0
+  someone or a team worked on, build a weekly retrospective from commits,
+  estimate developer effort from commit history, compare a team's output
+  against level expectations, or mentions werkschau.
+version: 0.2.0
 ---
 
 # Werkschau Analysis
 
-Cluster a user's commits over a window into coherent initiatives, then write a narrative retrospective with calibrated effort estimates.
+Cluster one or more users' commits over a window into coherent initiatives, then write a per-person narrative retrospective with calibrated effort estimates. Supports comparing a team's output against level expectations.
 
 ## Pipeline
 
 ```bash
-${CLAUDE_PLUGIN_ROOT}/.venv/bin/werkschau extract --user <username> --since <window> --output "/tmp/werkschau-$(id -u).json"
+${CLAUDE_PLUGIN_ROOT}/.venv/bin/werkschau extract \
+  --user <u1>:<level1> --user <u2>:<level2> ... \
+  --since <window> \
+  --output "/tmp/werkschau-$(id -u).json"
 ```
 
-Then read `/tmp/werkschau-$(id -u).json`. Resolve `$(id -u)` via `Bash` first and substitute the numeric value when calling `Read`. The uid suffix avoids cross-user collisions on shared boxes.
+Or with a saved team:
 
-## What you receive per commit
+```bash
+${CLAUDE_PLUGIN_ROOT}/.venv/bin/werkschau extract --team <name> --since <window> --output "/tmp/werkschau-$(id -u).json"
+```
 
-Heuristic features only, not the full diff. To inspect a diff, call `gh api /repos/{owner}/{repo}/commits/{sha}` for that commit. Do this for the 2-4 most substantive commits per initiative; do not deep-read every commit -- it's wasteful and the heuristics already filter noise.
+Then read `/tmp/werkschau-$(id -u).json`. Resolve `$(id -u)` via `Bash` first and substitute the numeric value when calling `Read`.
 
-Useful signals at a glance:
-- `churn` (`additions + deletions`) -- crude size proxy
-- `files_changed`, `unique_top_dirs` -- breadth proxy
-- `test_ratio` -- fraction of touched files matching test patterns; high ratios suggest deliberate, validated work
-- `is_dependency_bump`, `is_merge`, `is_revert` -- noise filters
-- `message_first_line` -- the conventional summary line
-- `file_paths_sample` -- first 25 file paths, enough to infer subsystem
-- `weekday`, `hour_utc` -- cadence signals
+## What the JSON contains
 
-## Clustering into initiatives
+Top-level: `since`, `until`, `team`, `user_count`, `users[]`.
 
-Default grouping key: `repo`. Split a single repo's commits into multiple initiatives when the work clearly diverges by subsystem or theme. Heuristics:
+Per user in `users[]`: `user`, `level`, `repos_visited`, `repo_count`, `commit_count`, `total_churn`, `total_heuristic_effort_minutes`, `commits[]`.
+
+Per commit in `commits[]`: `sha`, `url`, `repo`, `author_login`, `author_name`, `co_authors`, `committer_date_utc`, `hour_utc`, `weekday`, `message_first_line`, `message_length`, `additions`, `deletions`, `churn`, `files_changed`, `unique_top_dirs`, `file_paths_sample`, `test_ratio`, `is_merge`, `is_revert`, `is_dependency_bump`, `heuristic_effort_minutes`.
+
+To inspect a full diff, `gh api /repos/{owner}/{repo}/commits/{sha}`. Do this for the 2-4 most substantive commits per initiative; do not deep-read every commit.
+
+## Clustering into initiatives (per user)
+
+Default grouping key: `repo`. Split a single repo's commits into multiple initiatives when work clearly diverges by subsystem or theme. Heuristics:
 
 - Different top-level dirs touched and unrelated commit messages -> different initiatives
 - A run of commits sharing a feature keyword in messages and overlapping file paths -> one initiative
-- Dependabot / renovate-style commits, single-file typo fixes, README touch-ups -> roll into a "Maintenance" bucket
+- Dependabot / Renovate-style commits, single-file typo fixes, README touch-ups -> roll into a "Maintenance" bucket
 
-Aim for between 2 and 8 initiatives in the final report. Fewer feels lossy; more loses the narrative.
+Aim for between 2 and 8 initiatives per user.
 
-## Effort calibration
+## Level calibration
 
-The heuristic effort numbers are inputs, not answers. They over-count dependency bumps and under-count subtle but high-stakes changes. Calibrate using these anchors:
+The heuristic effort numbers are inputs, not answers. Use these anchors to calibrate. Each level has both a typical commit-visible work range AND an "invisible" workload that does not surface in `git log`. **The relationship inverts at the top: senior+ engineers should have less commit-visible volume, not more, because their leverage shifts toward review, design, mentorship, and unblocking others.**
 
-- A typical IC produces **15-30 hours of werkschau-visible work** in a 5-day week. The rest goes to meetings, design, code review, debugging without commits, communication. If your numbers sum to 60 hours for a single week, scale down -- you are double-counting churn.
+| Level | Typical commit-visible h/wk | What's invisible | Red flags |
+|---|---|---|---|
+| Junior | 10-15h | Onboarding, learning, paired work | <5h sustained may indicate blockers, not laziness |
+| Mid | 15-25h | Some review, debugging, ad-hoc help | Sustained <10h may indicate scope confusion |
+| Senior | 15-25h | Heavier review, design discussions, cross-team alignment | <10h *with low review activity* is the concern, not low commits alone |
+| Staff | 8-18h | RFCs, mentorship, cross-team work, hiring, code review | High commit-volume (>30h) often means under-leveraging |
+| Principal | 5-12h | Strategy, architecture, hiring, organizational work | Same as Staff -- high commit volume is a smell |
+
+For a user with `level: null`, do not emit a level-relative tag in the comparative table. Just report what's visible.
+
+The "h/wk" ranges assume a 5-day workweek. Scale linearly for windows shorter or longer than 7 days. For a 14-day window, double the ranges.
+
+## Calibration adjustments beyond level
+
 - A **single-file dependency bump** is 5-10 minutes regardless of LOC.
 - A **clean refactor with tests** at 500 LOC churn is 2-4 hours, not the 8-10 the raw formula suggests.
 - A **bug fix** that is 30 lines changed but spans 4 unrelated files is often 2-3 hours of debugging time (not visible in churn).
-- **Merge commits** and **reverts** count for almost nothing on their own; the work is in the commits they reference.
-- A run of small commits in a single afternoon clustered in one subsystem usually represents one continuous focused session. Don't sum them naively -- the cognitive overhead of context switching is what makes parallel work expensive, not concurrent work.
+- **Merge commits** and **reverts** count for almost nothing on their own.
+- A run of small commits in a single afternoon clustered in one subsystem usually represents one continuous focused session. Don't sum them naively.
+- **Test-heavy commits** (`test_ratio > 0.4`) usually represent more deliberate engineering than the churn alone implies. Lean *up* on the estimate.
+- **Weekend / late-night clusters** are signal but not necessarily of effort -- they often reflect side-project or hobby work, not work-week intensity. Note in the activity profile, do not double-count.
 
-## Report format
+## Comparative report format (multi-user)
 
 ```markdown
-# Werkschau -- <username>
-**Window:** <since> -> <until>
-**Estimated effort:** ~<H> hours across <N> initiatives
-**Commits:** <C> across <R> repos
+# Werkschau -- <team-name-or-ad-hoc>
+**Window:** <since> -> <until> (<N> days)
+**Members:** <C> users
 
-## Initiatives
+## Comparative summary
 
-### 1. <Initiative name> -- ~<H>h, <C> commits
-*<owner/repo> (or multiple repos if the work spans them)*
+| User | Level | Commits | Repos | Est. effort | Vs. level |
+|---|---|---|---|---|---|
+| KranzL | Staff | 53 | 4 | ~22h | tracking *high* for Staff (commit-heavy week) |
+| alice | Senior | 18 | 3 | ~17h | on pace for Senior |
+| bob | Junior | 6 | 1 | ~8h | tracking *low* for Junior; check for blockers |
 
-<1-3 sentences. What they actually built or fixed, in concrete terms.
-Mention the subsystem by name. If you read the diff, mention what
-specifically changed -- "switched the auth middleware from session
-cookies to JWT" beats "auth changes". If there's a meaningful
-before/after, note it.>
+> "Vs. level" describes commit-visible output relative to that level's typical range -- not a performance judgment. Senior+ engineers' real output (review, mentorship, design) is intentionally invisible here.
+
+## KranzL (Staff) -- ~22h, 53 commits, 4 repos
+
+### 1. <Initiative name> -- ~Xh, Y commits
+*<owner/repo>*
+
+<1-3 sentences. Concrete, specific. Mention the actual subsystem and
+the actual change. If you read the diff, name what specifically
+changed -- not "auth changes" but "switched the auth middleware from
+session cookies to JWT".>
 
 Key commits:
 - `<sha7>` <message_first_line>
 - `<sha7>` <message_first_line>
 
-### 2. <Initiative name> -- ~<H>h, <C> commits
-...
+### 2. ...
 
-## Maintenance & noise -- ~<H>h, <C> commits
-<one paragraph or bullet list of bumped lockfiles, README fixes,
-formatting changes, etc>
+### Maintenance & noise -- ~Xh, Y commits
+<one paragraph: lockfiles, READMEs, formatting>
 
-## Activity profile
+### Activity profile
+<short paragraph: most active weekday, time-of-day, weekend work, gaps, coauthors>
 
-<one short paragraph: most active weekday, typical time-of-day,
-weekend work, longest gap, co-authored commits if relevant>
+## alice (Senior) -- ~17h, 18 commits, 3 repos
+
+(same shape as KranzL section)
+
+## Cross-team observations
+
+- <coauthorship pairs, e.g. "KranzL and alice co-authored 4 commits in services/api during the auth migration">
+- <shared initiatives across users>
+- <week-over-week trend if window >= 14d>
 
 ## Caveats
 
-- This report only counts work that produced commits. Code review, debugging without commits, design discussions, and meetings are invisible here.
-- Effort estimates are calibrated guesses, not measurements. Treat the per-initiative numbers as ranges, not point values.
+- Werkschau only counts commit-visible work. Code review, debugging without commits, design discussions, meetings, and pair programming where you weren't the committer are invisible here. This is especially load-bearing for Senior+ engineers.
+- Effort estimates are calibrated guesses, not measurements. Treat per-initiative numbers as ranges, not point values.
 - Discovery is bounded by GitHub's `/users/{user}/events` feed (~90 days, ~300 events). Heavily active users may have older or higher-volume work that did not surface.
+- "Vs. level" tags compare commit volume only. They are not performance assessments. Do not use this report as a primary input to performance management decisions.
 ```
+
+## Single-user report format
+
+If `users[]` has length 1, drop the comparative table and the "Cross-team observations" section. Use the Werkschau v0.1 single-user shape with the per-user sections becoming the body.
 
 ## What to never do
 
-- Never invent commits or shas. If a commit isn't in the JSON, it did not exist for this run.
+- **Never emit a thumbs-up/thumbs-down rating on a person.** "Tracking low for Senior" is descriptive (commit volume sits below the typical range for that level). "Underperforming" or "needs improvement" is a judgment, and Werkschau is not a performance-management tool. The comparative tag is *for context*, not *for evaluation*.
+- Never invent commits or shas. If a commit isn't in the JSON, it didn't exist for this run.
 - Never describe work in vague terms ("improved performance", "fixed bugs") -- if you can't be specific, fetch the diff.
-- Never treat heuristic effort as a final number. The whole point of the LLM step is calibration.
-- Never include private repo contents in the report if the user asks for a "shareable" version. Repo names alone are usually fine; commit messages and file paths can leak info.
+- Never treat heuristic effort as a final number. Calibration is the whole point of this step.
+- Never punish Staff/Principal engineers for low commit volume. Re-read the inversion table above before tagging Staff "tracking low" -- you almost always want "on pace" or "leverage-mode" for Staff with modest commit volume.
+- Never include private repo contents in a "shareable" version of the report. Repo names alone are usually fine; commit messages and file paths can leak info.
+- Never aggregate co-authored commits into both authors' totals naively. If commit X is authored by alice and co-authored by bob, count it as alice's primary and note in bob's section ("co-authored Y commits with alice").

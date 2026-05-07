@@ -1,38 +1,77 @@
 # Werkschau
 
-Audit a developer's GitHub activity over a window and produce a narrative report of what they actually worked on, with effort estimates per initiative.
+Audit one or more developers' GitHub activity over a window and produce a narrative retrospective of what they actually worked on, with effort estimates per initiative -- calibrated to each person's level.
 
-Think `git log` -> human-readable retrospective. Discovers every repo a user touched (including org repos they're not formally listed on), pulls their commits + diffs, and clusters the work into themes.
+Discovers every repo a user touched (including org repos they're not formally listed on) via `/users/{user}/events`, pulls their commits + diffs, clusters the work into themes, and writes a per-person retrospective with comparative output across the team.
 
 ## Two entry points
 
-- **`/werkschau` slash command** -- runs inside Claude Code, uses your local `gh` auth, no Anthropic API key needed. Claude analyzes the extracted features in-conversation and writes the report.
+- **`/werkschau` slash command** -- runs inside Claude Code, uses your local `gh` auth, no Anthropic API key needed. Asks you who's on the team, gathers each person's level via `AskUserQuestion`, then Claude analyzes the extracted features in-conversation and writes the report. Saves teams for reuse.
 - **`werkschau analyze` CLI** *(planned)* -- standalone Python that calls the GitHub API and Anthropic API directly. Runs anywhere, including CI / cron.
+
+## Quickstart
+
+```
+/werkschau
+```
+
+Walks you through the team setup, runs the extractor, and writes a comparative report.
+
+For repeat runs of the same team:
+
+```
+/werkschau --team platform --since 7d
+```
 
 ## Pipeline
 
 ```
 events + search -> repo list -> commits -> diff features
-  -> heuristic prefilter -> theme clustering -> narrative report
+  -> heuristic prefilter -> per-user theme clustering
+  -> level-calibrated effort estimates -> comparative report
 ```
 
-Discovery uses `GET /users/{user}/events` for the last 90 days (covers public + the user's own private activity when authenticated as them) and falls back to `GET /search/commits?q=author:{user}` for older windows.
+## Level calibration
 
-## Quickstart (slash command)
+Werkschau models each level's commit-visible output range *and* what's invisible at that level. Senior+ engineers shift leverage toward review, design, and mentorship -- so high commit volume at Staff is often a smell, not a strength. The skill's calibration table is the source of truth.
 
-```
-/werkschau KranzL --since 7d
-```
+| Level | Typical commit-visible h/wk | What's invisible |
+|---|---|---|
+| Junior | 10-15h | Onboarding, learning |
+| Mid | 15-25h | Some review, debugging |
+| Senior | 15-25h | More review, design discussions |
+| Staff | 8-18h | RFCs, mentorship, cross-team work |
+| Principal | 5-12h | Strategy, architecture, hiring |
 
-First run installs a local venv under the plugin (~30 seconds). All GitHub access goes through `gh`, so whatever `gh auth` is logged in as decides what's visible.
+Werkschau emits a "tracking high / on pace / tracking low *for level*" tag per user. **It is not a performance-management tool** -- the tags describe commit-visible volume relative to that level's typical range, not whether the person is performing well. Real performance assessment requires the invisible work.
 
-## CLI (extractor only, today)
+## CLI (extractor)
+
+Single user:
 
 ```bash
-werkschau extract --user KranzL --since 7d --output /tmp/werkschau.json
+werkschau extract --user KranzL:staff --since 7d --output /tmp/werkschau.json
 ```
 
-Outputs one JSON record per commit with heuristic features (additions, deletions, files, churn, test ratio, time-of-day, day-of-week, message quality, is_merge, is_revert). The slash command pipes this into Claude for theme clustering and narrative generation.
+Multiple users:
+
+```bash
+werkschau extract \
+  --user KranzL:staff \
+  --user alice:senior \
+  --user bob:junior \
+  --since 7d \
+  --output /tmp/werkschau.json
+```
+
+Saved team:
+
+```bash
+werkschau team save platform --user KranzL:staff --user alice:senior --user bob:junior
+werkschau extract --team platform --since 7d --output /tmp/werkschau.json
+```
+
+Output JSON has `users[]`, one entry per member, with per-commit heuristic features (additions, deletions, files, churn, test ratio, time-of-day, weekday, message quality, is_merge, is_revert, co-authors, heuristic effort). The slash command pipes this into Claude for theme clustering and narrative generation.
 
 ## Why "Werkschau"
 

@@ -1,17 +1,18 @@
 ---
-description: Audit a developer's GitHub activity over a window and write a narrative retrospective with effort estimates
-argument-hint: "<github-username> [--since 7d|30d|1y|ISO8601] [--include-merges]"
+description: Audit one or more developers' GitHub activity over a window and write a narrative retrospective with effort estimates per initiative
+argument-hint: "[--team <name>] [--since 7d|30d|1y|ISO8601] [--include-merges]"
 allowed-tools:
   - Read
   - Bash
   - Glob
   - Grep
   - Write
+  - AskUserQuestion
 ---
 
 # Werkschau: GitHub Activity Retrospective
 
-Discover every repo a user touched in the window (including org repos they're not formally listed on), pull their commits + diff features, then cluster the work into themes and write a narrative report with effort estimates per initiative.
+Discover every repo each user touched in the window, pull their commits + diff features, then cluster the work into themes and write a per-person narrative with effort estimates calibrated to each person's level.
 
 ## Step 1: Verify setup
 
@@ -25,87 +26,156 @@ If `SETUP_NEEDED`, run the installer yourself (do not ask the user to run pip/py
 bash "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/install.sh"
 ```
 
-It creates a local venv under the plugin and installs the package. Takes about 15 seconds.
-
-Also confirm `gh` is authenticated:
+Then confirm `gh` is authenticated:
 
 ```bash
 gh auth status
 ```
 
-If `gh` is not authenticated, stop and tell the user to run `gh auth login` before continuing. The slash command relies entirely on the user's `gh auth` for GitHub access -- there is no token plumbing.
+If `gh` is not authenticated, stop and tell the user to run `gh auth login` before continuing.
 
-## Step 2: Parse arguments
+## Step 2: Resolve the team
 
-The first positional argument is the GitHub username. Optional flags:
+There are three ways the team is decided. Pick the first one that applies:
 
-- `--since` -- duration (`7d`, `14d`, `30d`, `1y`) or ISO8601 timestamp. Default `7d`.
-- `--until` -- ISO8601 timestamp. Default `now`.
-- `--include-merges` -- include merge commits (off by default; merges add noise to the narrative).
+### 2a. Shortcut: `--team <name>` was passed
 
-If no username was provided, ask once via the conversation: "Whose GitHub activity should I audit?" and accept the next message as the username.
+Skip Step 2 entirely and use the saved team:
+
+```bash
+${CLAUDE_PLUGIN_ROOT}/.venv/bin/werkschau team show <name>
+```
+
+If the team file does not exist, surface the error and continue to 2b.
+
+### 2b. Interactive: collect the team
+
+Use **AskUserQuestion** for the first decision:
+
+**Question: "Who do you want to audit?"**
+Header: "Scope"
+Options:
+- "Just me / one person" -- single user, prompt conversationally for the username
+- "A team in a single GitHub org" -- list org members and pick from them
+- "A team across multiple orgs / arbitrary list" -- collect usernames conversationally
+
+**If "single GitHub org":**
+1. Ask conversationally: "Which org?"
+2. Enumerate members:
+   ```bash
+   gh api /orgs/<org>/members --paginate --jq '.[].login'
+   ```
+3. If the list is short (<= 25), use **AskUserQuestion** with multiSelect=true and one option per login:
+   - Header: "Team"
+   - Question: "Pick the team members"
+   - Options: one per login from the gh output
+4. If the list is long (>25), ask conversationally instead: "I see {N} members in {org}. Drop the GitHub usernames you want to audit, comma-separated or one per line."
+
+**If "arbitrary list" or "single person":**
+Ask conversationally: "Drop the GitHub usernames you want to audit, comma-separated or one per line." Accept the next message as the answer; trim whitespace, split on whitespace and commas, deduplicate.
+
+### 2c. Collect levels
+
+Once the team is collected (>= 1 username), ask for the level of each member. Use **a single AskUserQuestion call** with one question per teammate:
+
+For each user, add a question:
+- Header: `<username>` (truncated to 12 chars if longer; AskUserQuestion headers are short)
+- Question: `"Level for <username>?"`
+- Options:
+  - "Junior" -- 0-3 yrs, mostly guided work
+  - "Mid" -- 3-6 yrs, autonomous on features
+  - "Senior" -- 6-10 yrs, owns areas, drives reviews
+  - "Staff" -- cross-team, mostly RFCs / leverage / mentorship
+  - "Principal" -- strategy / architecture, low commit volume by design
+  - "Skip / unknown" -- no level calibration for this user
+
+If the user picks "Skip / unknown", store level as `null` for that user.
+
+### 2d. Offer to save
+
+If 2 or more members were collected via interactive flow, **AskUserQuestion**:
+
+**Question: "Save this team for future runs?"**
+Header: "Save"
+Options:
+- "Yes, save as a named team"
+- "No, run this once"
+
+If yes, ask conversationally for a team name (alphanumeric + `-`/`_`), then save:
+
+```bash
+${CLAUDE_PLUGIN_ROOT}/.venv/bin/werkschau team save <name> \
+  --user <user1>:<level1> \
+  --user <user2>:<level2> ...
+```
+
+Tell the user how to reuse it: `/werkschau --team <name> --since <window>`.
 
 ## Step 3: Extract
 
+Build one `--user USER:LEVEL` flag per member (or `--user USER` if level is null):
+
 ```bash
 ${CLAUDE_PLUGIN_ROOT}/.venv/bin/werkschau extract \
-  --user "<username>" \
+  --user "<u1>:<l1>" \
+  --user "<u2>:<l2>" \
   --since "<since>" \
   --output "/tmp/werkschau-$(id -u).json"
 ```
 
-Add `--until` and `--include-merges` if the user supplied them. Stream the stderr to the user so they see discovery progress.
+If `--team <name>` was passed, use `--team <name>` instead of repeated `--user` flags.
 
-If the extractor reports `No PushEvent activity in window`, this almost always means one of:
-- The window is older than ~90 days and the events feed has aged out.
-- The username is wrong (case matters less for `gh api` but typos are common).
-- The user is committing under a different GitHub login than you searched.
+Stream the stderr to the user so they see discovery progress.
 
-Surface that diagnosis and ask the user to clarify before retrying.
+If the extractor reports no PushEvent activity for a user, surface that explicitly -- it usually means the window is older than ~90 days, the username is wrong, or that user commits under a different login.
 
 ## Step 4: Load results
 
-Read the JSON at `/tmp/werkschau-$(id -u).json`. Resolve `$(id -u)` first via `Bash` (`id -u`) and substitute the literal numeric value into the path you pass to `Read`.
+Read the JSON at `/tmp/werkschau-$(id -u).json`. Resolve `$(id -u)` first via `Bash`. The payload shape:
 
-The payload has:
-- `user`, `since`, `until` -- the window
-- `repos_visited` -- every `owner/repo` we pulled commits from
-- `repo_count`, `commit_count`, `total_churn`, `total_heuristic_effort_minutes` -- top-line numbers
-- `commits[]` -- one record per commit with sha, url, message_first_line, additions/deletions/churn, files_changed, file_paths_sample, test_ratio, is_merge, is_revert, is_dependency_bump, hour_utc, weekday, heuristic_effort_minutes, co_authors
-
-Heuristic effort is a rough prefilter, NOT the final estimate. You will compute the real per-initiative estimates in Step 6.
+- `since`, `until` -- the window
+- `team` -- the team name (or null if ad-hoc)
+- `users[]` -- one entry per user, each with:
+  - `user`, `level`
+  - `repos_visited`, `repo_count`, `commit_count`
+  - `total_churn`, `total_heuristic_effort_minutes`
+  - `commits[]` -- per-commit features (see the skill for fields)
 
 ## Step 5: Read the skill
 
-Read `${CLAUDE_PLUGIN_ROOT}/skills/werkschau-analysis/SKILL.md` for the report format, clustering rules, and effort calibration guidance.
+Read `${CLAUDE_PLUGIN_ROOT}/skills/werkschau-analysis/SKILL.md` for clustering rules, level calibration, comparative report format, and the perf-management guardrails.
 
-## Step 6: Cluster + estimate
+## Step 6: Cluster + estimate per user
 
-Group commits into **initiatives** -- coherent threads of work that share a theme. The default grouping key is the repo, but split a single repo's commits into multiple initiatives when the work clearly diverges (e.g. one feature in `services/api`, an unrelated bugfix in `services/billing`, a chore in `.github/workflows`). Use commit messages and file paths to decide.
+For each user in `users[]`:
+1. Cluster their commits into 2-8 initiatives (default key = repo, split when work clearly diverges).
+2. For each initiative, read 2-4 of the most substantive commits in full via `gh api /repos/{owner}/{repo}/commits/{sha}` to write specific narrative.
+3. Estimate effort hours per initiative, calibrated to the user's level using the calibration table in the skill. Honor the inversion: at Staff/Principal, low commit volume is often expected and not a red flag.
+4. Sum to a per-user total estimated effort.
 
-For each initiative:
-1. Look at the commits in that group. Read 2-4 of the most substantive ones in full via `gh api /repos/{owner}/{repo}/commits/{sha}` -- you do NOT need to deep-read the dependency bumps or the trivial ones.
-2. Write a 1-3 sentence narrative of what they actually did. Be specific (mention the actual subsystem, the actual change), not generic ("worked on backend stuff").
-3. Estimate hours of effort. Calibration: a typical IC produces 15-30 hours of `werkschau`-visible work in a 5-day week (the rest is meetings, code review, debugging without commits, design, comms). Use the heuristics as inputs but trust judgment over arithmetic. A 500-line refactor with tests takes longer than a 500-line dependency bump even if churn is identical.
-4. Sum the per-commit effort to a per-initiative total.
+Skip per-commit deep-reads for trivial commits (dependency bumps, lockfile-only, single-line typos) -- the heuristic features are sufficient.
 
-Initiatives that look like throwaway noise (a single dependency bump, a docs typo) can be collapsed into a "Maintenance" bucket at the end with a single line.
+## Step 7: Generate the combined report
 
-## Step 7: Generate report
+Follow the multi-user format in the skill:
 
-Produce a markdown report following the format in the skill. Section order:
+1. **Header** -- window, team name (if any), member count
+2. **Comparative summary table** -- one row per user with level, commit count, estimated effort, and a "tracking high / on pace / tracking low *for level*" tag. **Never emit a thumbs-up/thumbs-down rating per person -- only describe what's visible and how it compares to that level's typical commit-visible output.**
+3. **Per-user sections** -- one section per user with their initiatives ordered by effort descending, plus an "Activity profile" subsection (cadence, weekend work, time-of-day pattern)
+4. **Cross-team observations** -- coauthorship pairs, shared initiatives if multiple users worked on the same repo, week-over-week trends if the window is long enough
+5. **Caveats** -- the standard ones from v0.1, plus the level-calibration disclaimer
 
-1. **Header** -- user, window, total estimated effort, total commits, repo count
-2. **Initiatives** -- one section per initiative, ordered by estimated effort descending
-3. **Maintenance & noise** -- collapsed bucket (optional)
-4. **Activity profile** -- a short paragraph on cadence (most active day, time-of-day pattern, weekend work, coauthored commits)
-5. **Caveats** -- explicit note that this only counts commit-visible work and effort estimates are calibrated guesses
-
-Display the report to the user inline.
+Display the report inline.
 
 ## Step 8: Save the report
 
-Save the report to `werkschau_<username>_<YYYYMMDD>_<HHMMSS>.md` in the user's current working directory. Get the timestamp with `date +%Y%m%d_%H%M%S`. Confirm to the user with the saved filename.
+Save to `werkschau_<team-or-first-user>_<YYYYMMDD>_<HHMMSS>.md` in the current working directory:
+
+```bash
+date +%Y%m%d_%H%M%S
+```
+
+Confirm to the user with the saved filename.
 
 ## Step 9: Cleanup
 
