@@ -184,11 +184,13 @@ def _render_chart_svg(blocks: list[UserBlock]) -> str:
 def _render_rollup(org: Org, by_handle: dict) -> str:
     rows = []
     for mgr in (*org.directors(), *org.managers()):
+        if not mgr.github:
+            continue
         reports = org.reports_of(mgr.github)
         if not reports:
             continue
-        outs = [by_handle[p.github].scores.output for p in reports if p.github in by_handle]
-        focs = [by_handle[p.github].scores.focus for p in reports if p.github in by_handle]
+        outs = [by_handle[p.github].scores.output for p in reports if p.github and p.github in by_handle]
+        focs = [by_handle[p.github].scores.focus for p in reports if p.github and p.github in by_handle]
         if not outs:
             continue
         out_med = median(outs)
@@ -248,42 +250,105 @@ def _render_ledger(org: Org, by_handle: dict) -> str:
 
 def _render_briefs(org: Org, by_handle: dict) -> str:
     articles = []
-    leaders: list[Person] = []
+
+    vp_direct = [p for p in org.people
+                 if not p.is_director and not p.is_manager
+                 and not p.manager and not p.director]
+    if vp_direct:
+        articles.append(_render_vp_direct_brief(org, vp_direct, by_handle))
+
     for director in org.directors():
-        managers_under = [m for m in org.managers() if m.director == director.github]
-        if managers_under:
-            leaders.extend(managers_under)
-        else:
-            leaders.append(director)
-    for leader in leaders:
-        articles.append(_render_brief_article(org, leader, by_handle))
+        articles.append(_render_leader_brief(org, director, by_handle, scope="director"))
+
+    for manager in org.managers():
+        articles.append(_render_leader_brief(org, manager, by_handle, scope="manager"))
+
+    articles = [a for a in articles if a.strip()]
     if not articles:
         return ""
     return "\n".join(articles)
 
 
-def _render_brief_article(org: Org, mgr: Person, by_handle: dict) -> str:
-    persons = [mgr, *org.reports_of(mgr.github)]
+def _render_leader_brief(org: Org, leader: Person, by_handle: dict, scope: str) -> str:
+    if scope == "manager":
+        direct_reports = [p for p in org.reports_of(leader.github)
+                          if not p.is_manager and not p.is_director and p.github != leader.github]
+        team_label = f"{_html(leader.name)}'s team"
+        boss_label = leader.director or (org.vp.github or org.vp.name)
+    else:
+        direct_reports = [p for p in org.people
+                          if p.director == leader.github
+                          and not p.is_manager and not p.is_director
+                          and not p.manager]
+        team_label = f"{_html(leader.name)}'s direct reports"
+        boss_label = org.vp.github or org.vp.name
+
+    leader_block = by_handle.get(leader.github) if leader.github else None
+    if not leader_block and not direct_reports:
+        return ""
+
     cards = []
-    for i, p in enumerate(persons):
-        block = by_handle.get(p.github)
-        if block is None:
-            continue
-        meta = _meta_chip(block)
-        narrative = block.narrative.strip() or "No commit-visible activity this week."
-        cls = "brief-person brief-person-lead" if i == 0 else "brief-person"
-        cards.append(f"""
-      <div class="{cls}">
-        <h3>{_html(p.github)} <em>{meta}</em></h3>
-        <p class="brief-person-body">{_html(narrative)}</p>
-      </div>""")
-    director_handle = mgr.director or org.vp.github
+    if leader_block:
+        cards.append(_card(leader_block, lead=True))
+    elif scope in ("director", "manager"):
+        cards.append(_offgrid_card(leader, lead=True))
+    for p in direct_reports:
+        block = by_handle.get(p.github) if p.github else None
+        if block:
+            cards.append(_card(block, lead=False))
+        else:
+            cards.append(_offgrid_card(p, lead=False))
+
+    role_label = f"{(leader.level or '').upper()} {(leader.role or '').upper()}".strip()
+    if not role_label:
+        role_label = "—"
+    report_count = len([p for p in (org.reports_of(leader.github) if leader.github else []) if p.github != leader.github])
     return f"""
     <article class="brief">
-      <h2 class="brief-name">{_html(mgr.github)}'s team</h2>
-      <p class="brief-meta">{_html((mgr.level or "").upper())} {_html((mgr.role or "").upper())} · {len(persons) - 1} reports · reports to {_html(director_handle)}</p>
+      <h2 class="brief-name">{team_label}</h2>
+      <p class="brief-meta">{_html(role_label)} · {report_count} reports · reports to {_html(boss_label or '—')}</p>
       {''.join(cards)}
     </article>"""
+
+
+def _render_vp_direct_brief(org: Org, direct_reports: list[Person], by_handle: dict) -> str:
+    cards = []
+    for p in direct_reports:
+        block = by_handle.get(p.github) if p.github else None
+        if block:
+            cards.append(_card(block, lead=False))
+        else:
+            cards.append(_offgrid_card(p, lead=False))
+    return f"""
+    <article class="brief">
+      <h2 class="brief-name">Reports to {_html(org.vp.name)}</h2>
+      <p class="brief-meta">VP-direct contributors · {len(direct_reports)} reports</p>
+      {''.join(cards)}
+    </article>"""
+
+
+def _card(block: UserBlock, lead: bool) -> str:
+    meta = _meta_chip(block)
+    narrative = block.narrative.strip() or "No commit-visible activity this week."
+    cls = "brief-person brief-person-lead" if lead else "brief-person"
+    label = block.person.name or (block.person.github or "")
+    return f"""
+      <div class="{cls}">
+        <h3>{_html(label)} <em>{meta}</em></h3>
+        <p class="brief-person-body">{_html(narrative)}</p>
+      </div>"""
+
+
+def _offgrid_card(person: Person, lead: bool) -> str:
+    cls = "brief-person brief-person-lead" if lead else "brief-person"
+    role_chip = f"{(person.level or '').upper()} {(person.role or '').upper()}".strip()
+    chip = role_chip if role_chip else "no GitHub account"
+    label = person.name or (person.github or "")
+    return f"""
+      <div class="{cls}">
+        <h3>{_html(label)} <em>{_html(chip)}</em></h3>
+        <p class="brief-person-body"><em>Not on GitHub. Commit-visible activity is not tracked for this person.</em></p>
+      </div>"""
 
 
 def _meta_chip(b: UserBlock) -> str:

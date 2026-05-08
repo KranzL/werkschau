@@ -114,6 +114,20 @@ def normalize_level(value: str | None) -> str | None:
         "l9": "senior principal",
         "distinguished engineer": "distinguished",
         "l10": "distinguished",
+        "manager": "staff",
+        "engineering manager": "staff",
+        "em": "staff",
+        "senior manager": "senior staff",
+        "sr manager": "senior staff",
+        "sr. manager": "senior staff",
+        "senior-manager": "senior staff",
+        "director": "principal",
+        "senior director": "senior principal",
+        "sr director": "senior principal",
+        "sr. director": "senior principal",
+        "senior-director": "senior principal",
+        "vp": "distinguished",
+        "vice president": "distinguished",
     }
     if cleaned in aliases:
         return aliases[cleaned]

@@ -10,7 +10,7 @@ from .levels import normalize_level, normalize_role
 
 @dataclass(frozen=True)
 class Person:
-    github: str
+    github: str | None
     name: str
     level: str | None
     role: str | None
@@ -45,7 +45,10 @@ class Org:
         return tuple(p for p in self.people if p.is_director)
 
     def scored_people(self) -> tuple[Person, ...]:
-        return tuple(p for p in self.people if not p.is_vp)
+        return tuple(p for p in self.people if not p.is_vp and p.github)
+
+    def offgrid_people(self) -> tuple[Person, ...]:
+        return tuple(p for p in self.people if not p.is_vp and not p.github)
 
 
 def load_org(path: str | Path) -> Org:
@@ -55,11 +58,13 @@ def load_org(path: str | Path) -> Org:
 
 def _build_org(raw: dict[str, Any]) -> Org:
     vp_raw = raw.get("vp")
-    if not vp_raw or not vp_raw.get("github"):
-        raise ValueError("org.json must have a 'vp' object with at least a 'github' field")
+    if not vp_raw or not (vp_raw.get("github") or vp_raw.get("name")):
+        raise ValueError("org.json must have a 'vp' object with at least a 'name' or 'github' field")
+    vp_handle = (vp_raw.get("github") or "").strip() or None
+    vp_name = (vp_raw.get("name") or vp_handle or "VP").strip()
     vp = Person(
-        github=vp_raw["github"].strip(),
-        name=vp_raw.get("name", vp_raw["github"]).strip(),
+        github=vp_handle,
+        name=vp_name,
         level=None,
         role=None,
         manager=None,
@@ -68,65 +73,92 @@ def _build_org(raw: dict[str, Any]) -> Org:
     )
 
     people: list[Person] = []
-    seen: set[str] = {vp.github}
+    seen: set[str] = set()
+    if vp_handle:
+        seen.add(vp_handle)
+
+    for e_raw in vp_raw.get("employees", []) or []:
+        employee = _build_employee(e_raw, manager_github=None, director_github=None)
+        _check_duplicate(employee, seen)
+        people.append(employee)
 
     for d_raw in raw.get("directors", []) or []:
         director = _build_director(d_raw)
-        if director.github in seen:
-            raise ValueError(f"duplicate github handle: {director.github}")
-        seen.add(director.github)
+        _check_duplicate(director, seen)
         people.append(director)
+
+        for e_raw in d_raw.get("employees", []) or []:
+            employee = _build_employee(e_raw, manager_github=None, director_github=director.github)
+            _check_duplicate(employee, seen)
+            people.append(employee)
 
         for m_raw in d_raw.get("managers", []) or []:
             manager = _build_manager(m_raw, director.github)
-            if manager.github in seen:
-                raise ValueError(f"duplicate github handle: {manager.github}")
-            seen.add(manager.github)
+            _check_duplicate(manager, seen)
             people.append(manager)
 
             for e_raw in m_raw.get("employees", []) or []:
                 employee = _build_employee(e_raw, manager.github, director.github)
-                if employee.github in seen:
-                    raise ValueError(f"duplicate github handle: {employee.github}")
-                seen.add(employee.github)
+                _check_duplicate(employee, seen)
                 people.append(employee)
 
     return Org(vp=vp, people=tuple(people))
 
 
+def _check_duplicate(person: Person, seen: set[str]) -> None:
+    if person.github:
+        if person.github in seen:
+            raise ValueError(f"duplicate github handle: {person.github}")
+        seen.add(person.github)
+
+
+def _normalize_handle(raw: dict[str, Any]) -> str | None:
+    handle = (raw.get("github") or "").strip()
+    return handle or None
+
+
 def _build_director(raw: dict[str, Any]) -> Person:
-    handle = raw["github"].strip()
+    handle = _normalize_handle(raw)
+    name = (raw.get("name") or handle or "").strip()
+    if not name:
+        raise ValueError("director entry needs at least a name or github handle")
     return Person(
         github=handle,
-        name=(raw.get("name") or handle).strip(),
-        level=normalize_level(raw.get("level")),
-        role=normalize_role(raw.get("role")),
+        name=name,
+        level=normalize_level(raw.get("level")) if handle else None,
+        role=normalize_role(raw.get("role")) if handle else None,
         manager=None,
         director=handle,
         is_director=True,
     )
 
 
-def _build_manager(raw: dict[str, Any], director_github: str) -> Person:
-    handle = raw["github"].strip()
+def _build_manager(raw: dict[str, Any], director_github: str | None) -> Person:
+    handle = _normalize_handle(raw)
+    name = (raw.get("name") or handle or "").strip()
+    if not name:
+        raise ValueError("manager entry needs at least a name or github handle")
     return Person(
         github=handle,
-        name=(raw.get("name") or handle).strip(),
-        level=normalize_level(raw.get("level")),
-        role=normalize_role(raw.get("role")),
+        name=name,
+        level=normalize_level(raw.get("level")) if handle else None,
+        role=normalize_role(raw.get("role")) if handle else None,
         manager=handle,
         director=director_github,
         is_manager=True,
     )
 
 
-def _build_employee(raw: dict[str, Any], manager_github: str, director_github: str) -> Person:
-    handle = raw["github"].strip()
+def _build_employee(raw: dict[str, Any], manager_github: str | None, director_github: str | None) -> Person:
+    handle = _normalize_handle(raw)
+    name = (raw.get("name") or handle or "").strip()
+    if not name:
+        raise ValueError("employee entry needs at least a name or github handle")
     return Person(
         github=handle,
-        name=(raw.get("name") or handle).strip(),
-        level=normalize_level(raw.get("level")),
-        role=normalize_role(raw.get("role")),
+        name=name,
+        level=normalize_level(raw.get("level")) if handle else None,
+        role=normalize_role(raw.get("role")) if handle else None,
         manager=manager_github,
         director=director_github,
     )
