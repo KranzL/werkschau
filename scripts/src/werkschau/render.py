@@ -71,7 +71,10 @@ def _render_nameplate_meta(issue_number: int, until_human: str) -> str:
 
 def _classify_callouts(blocks: list[UserBlock]) -> tuple[list[UserBlock], list[UserBlock]]:
     locked = [b for b in blocks if b.scores.output > 0 and b.scores.focus > 0]
-    not_locked = [b for b in blocks if b.scores.output < 0 and b.scores.focus < 0]
+    not_locked = [
+        b for b in blocks
+        if b.scores.output < 0 and b.scores.focus < 0 and not b.person.is_director
+    ]
     locked.sort(key=lambda b: (b.scores.output + b.scores.focus), reverse=True)
     not_locked.sort(key=lambda b: (b.scores.output + b.scores.focus))
     return locked, not_locked
@@ -143,10 +146,15 @@ def _render_chart_svg(blocks: list[UserBlock]) -> str:
         x = 80 + (b.scores.focus + 1) * 200
         y = 360 - (b.scores.output + 1) * 150
         is_mgr = b.person.is_manager or b.person.is_director
+        is_director = b.person.is_director
         is_offgrid = b.person.github is None
         if is_offgrid:
             stroke, fill = "#bbbbbb", "#ffffff"
             text_weight, text_fill = "400", "#999999"
+        elif is_director and not (b.scores.output > 0 and b.scores.focus > 0):
+            stroke = "#999999"
+            fill = "#999999"
+            text_weight, text_fill = "500", "#666666"
         elif b.scores.output > 0 and b.scores.focus > 0:
             stroke, fill = "#1a7c36", "#1a7c36"
             text_weight, text_fill = "600", "#121212"
@@ -204,10 +212,14 @@ def _render_mini_chart_svg(blocks: list[UserBlock]) -> str:
         x = 70 + (b.scores.focus + 1) * 180
         y = 310 - (b.scores.output + 1) * 130
         is_mgr = b.person.is_manager or b.person.is_director
+        is_director = b.person.is_director
         is_offgrid = b.person.github is None
         if is_offgrid:
             stroke, fill = "#bbbbbb", "#ffffff"
             label_fill, label_weight = "#999999", "400"
+        elif is_director and not (b.scores.output > 0 and b.scores.focus > 0):
+            stroke, fill = "#999999", "#999999"
+            label_fill, label_weight = "#666666", "500"
         elif b.scores.output > 0 and b.scores.focus > 0:
             stroke, fill = "#1a7c36", "#1a7c36"
             label_fill, label_weight = "#121212", "600"
@@ -292,7 +304,7 @@ def _render_ledger(org: Org, by_id: dict) -> str:
             row_cls = "in-neg is-offgrid"
         elif b.scores.output > 0 and b.scores.focus > 0:
             row_cls = "in-pos"
-        elif b.scores.output < 0 and b.scores.focus < 0:
+        elif b.scores.output < 0 and b.scores.focus < 0 and not b.person.is_director:
             row_cls = "in-neg"
         else:
             row_cls = ""

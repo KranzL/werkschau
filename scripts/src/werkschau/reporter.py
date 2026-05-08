@@ -175,17 +175,34 @@ Strict rules:
   bullets — usually the top 1-3 clusters by weighted_minutes are the right
   bullets. Override the inferred names when the diffs make a more specific
   name obvious; you have richer signal than the heuristic does.
-- For Senior+ ICs and managers/directors: if commit volume is low, note in
-  the summary line that leverage likely lives outside commits (review,
-  design, mentorship). Still write 1-2 bullets if there's even modest
-  commit-visible work — describe that work in detail rather than skipping it.
-- For Data Scientists, ML Engineers, Data Analysts: low commit volume is
-  normal because most work is in notebooks, BI tools, or dashboards.
-- If commit_count == 0: output ONLY the summary line, no bullets. Write:
-  "No commit-visible activity this week." plus one short clause on why this
-  is normal for the role/level.
-- Never emit a thumbs-up/thumbs-down rating. No "great work" / "needs
-  improvement". Describe what the commits show; the reader decides.
+- Be direct about low output. If a Software Engineer, ML Engineer, or
+  Analytics Engineer shipped very little this week, just say so:
+    * "Did very little this week — one small commit to X."
+    * "Light week. The single commit touched only the test fixture."
+    * "Not enough commit-visible activity to evaluate."
+  No softening. No "probably blocked", no "leverage likely lives outside
+  commits", no "review and mentorship", no invented excuses.
+- The ONLY roles that get a role-based caveat for low/zero commit activity
+  are Data Scientists (DS) and Data Analysts (DA), because most of their
+  work genuinely happens in notebooks, BI tools, and dashboards that don't
+  commit to git. For these two roles only, you may append a single short
+  clause noting that.
+- Directors are not expected to commit much; for directors with low or
+  zero output, just describe what little they did (or write "No commit-
+  visible activity this week.") without judgment in either direction.
+  Do not flag directors as below pace.
+- If commit_count == 0:
+    * For SWE / MLE / AE / Manager: write exactly "No commit-visible
+      activity this week." Nothing else.
+    * For Director: write exactly "No commit-visible activity this week."
+    * For DS / DA: write "No commit-visible activity this week." plus one
+      short clause acknowledging notebook / BI / dashboard work.
+- If commit_count is low but nonzero: describe what shipped specifically.
+  For SWE / MLE / AE / Manager, you may add a direct one-sentence framing
+  like "Did very little this week" or "Light week" alongside the
+  description if the volume warrants it. Don't speculate about why.
+- Don't emit thumbs-up praise on the high end ("great work"). For the
+  low end, direct factual framing is fine.
 - Never invent commit content the diff data does not support.
 - No headers. No code fences. No preamble. No closing recap after the
   bullets.

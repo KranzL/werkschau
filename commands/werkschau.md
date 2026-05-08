@@ -351,10 +351,15 @@ Up to **four** bullets. Most weeks have 2–3.
 - If the diff snippets don't support that level of specificity, hedge ("touched the auth middleware in ways the available diff snippets don't fully reveal") rather than invent.
 - **Use the person's `description` field as ground truth** for what they own — but go deeper than the description does. Don't restate it verbatim.
 - Roll dependabot bumps, README touch-ups, lockfile-only commits, and version pins into a single `**Maintenance**` bullet, kept to one sentence.
-- For Senior+ ICs / managers / directors with low commit volume: note in the **summary line** that leverage likely lives outside commits (review, design, mentorship). Still write 1-2 bullets if there's modest commit-visible work — describe it in detail rather than skipping.
-- For Data Scientists, ML Engineers, Data Analysts: low commit volume is normal because most work happens in notebooks, BI tools, or dashboards.
-- If `commit_count == 0`: write only the summary line, no bullets. Phrase: `"No commit-visible activity this week. <one short clause on why this is normal for the role/level>."`
-- Never emit a thumbs-up/thumbs-down rating. Describe what the commits show; the reader decides.
+- **Be direct about low output.** If a SWE / MLE / AE shipped very little, just say so: *"Did very little this week — one small commit to X."* / *"Light week. The single commit touched only the test fixture."* / *"Not enough commit-visible activity to evaluate."* No "probably blocked", no "leverage likely lives outside commits", no "review and mentorship", no invented excuses.
+- **Data Scientists (DS) and Data Analysts (DA) get the exception** — their work genuinely lives in notebooks, BI tools, and dashboards that don't commit. For DS/DA only, you may append one short clause acknowledging that.
+- **Directors get a pass.** They aren't expected to commit much. For a director with low or zero commit-visible output, just describe what little they did (or write `"No commit-visible activity this week."`) without judgment in either direction. Don't flag directors as below pace.
+- If `commit_count == 0`:
+   - **For SWE / MLE / AE / Manager**: write exactly `"No commit-visible activity this week."` Nothing else.
+   - **For Director**: write exactly `"No commit-visible activity this week."`
+   - **For DS / DA**: write `"No commit-visible activity this week."` plus one short clause about notebook / BI / dashboard work.
+- If `commit_count` is low but nonzero: describe what shipped specifically. For SWE / MLE / AE / Manager, a direct one-sentence framing like *"Did very little this week"* or *"Light week"* is fine alongside the description. Don't speculate about why.
+- Don't emit thumbs-up praise on the high end (no *"great work"*). On the low end, direct factual framing is allowed.
 - Never invent commit content the diffs don't support.
 - No headers. No code fences. No preamble. No closing recap after the bullets.
 
