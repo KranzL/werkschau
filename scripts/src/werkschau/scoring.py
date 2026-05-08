@@ -73,6 +73,8 @@ class Scores:
     output: float
     focus: float
     work_kind_mix: dict[str, float]
+    churn_by_kind: dict[str, int]
+    loc_by_language: dict[str, int]
     initiatives: tuple[Initiative, ...]
 
     @property
@@ -93,17 +95,25 @@ class Scores:
 def score_user(user_payload: dict, level: str | None, role: str | None, window_days: int) -> Scores:
     commits = user_payload.get("commits", []) or []
     weighted_total = 0.0
-    kind_totals: dict[str, float] = defaultdict(float)
+    kind_effort: dict[str, float] = defaultdict(float)
+    kind_churn: dict[str, float] = defaultdict(float)
+    lang_churn: dict[str, float] = defaultdict(float)
     for c in commits:
         w = _commit_effort(c)
         weighted_total += w
+        churn = float((c.get("additions") or 0) + (c.get("deletions") or 0))
         for kind, share in _commit_kind_mix(c).items():
-            kind_totals[kind] += w * share
+            kind_effort[kind] += w * share
+            kind_churn[kind] += churn * share
+        for lang, share in _commit_language_mix(c).items():
+            lang_churn[lang] += churn * share
 
     if weighted_total > 0:
-        work_kind_mix = {k: v / weighted_total for k, v in kind_totals.items() if v > 0}
+        work_kind_mix = {k: v / weighted_total for k, v in kind_effort.items() if v > 0}
     else:
         work_kind_mix = {}
+    churn_by_kind = {k: int(round(v)) for k, v in kind_churn.items() if v >= 1}
+    loc_by_language = {k: int(round(v)) for k, v in lang_churn.items() if v >= 1}
 
     initiatives = cluster_initiatives(commits)
     output = _output_score(weighted_total, window_days)
@@ -116,6 +126,8 @@ def score_user(user_payload: dict, level: str | None, role: str | None, window_d
         output=output,
         focus=focus,
         work_kind_mix=dict(sorted(work_kind_mix.items(), key=lambda kv: kv[1], reverse=True)),
+        churn_by_kind=dict(sorted(churn_by_kind.items(), key=lambda kv: kv[1], reverse=True)),
+        loc_by_language=dict(sorted(loc_by_language.items(), key=lambda kv: kv[1], reverse=True)),
         initiatives=tuple(initiatives),
     )
 
@@ -131,11 +143,25 @@ def _focus_score(initiatives: list[Initiative] | tuple[Initiative, ...], weighte
     if commit_count < 3 or weighted_total <= 0 or not initiatives:
         return 0.0
     herfindahl = sum((i.weighted_minutes / weighted_total) ** 2 for i in initiatives)
-    return _clip(2.0 * herfindahl - 1.0, -1.0, 1.0)
+    return _clip(1.0 - 2.0 * herfindahl, -1.0, 1.0)
 
 
 def _clip(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
+
+
+def offgrid_scores() -> Scores:
+    return Scores(
+        weighted_minutes=0.0,
+        commit_count=0,
+        repo_count=0,
+        output=-1.0,
+        focus=-1.0,
+        work_kind_mix={},
+        churn_by_kind={},
+        loc_by_language={},
+        initiatives=(),
+    )
 
 
 def cluster_initiatives(commits: list[dict]) -> list[Initiative]:
@@ -313,6 +339,72 @@ def _commit_kind_mix(commit: dict) -> dict[str, float]:
         counts[_file_kind(p)] += 1
     total = sum(counts.values())
     return {k: v / total for k, v in counts.items()}
+
+
+def _commit_language_mix(commit: dict) -> dict[str, float]:
+    paths = commit.get("file_paths_sample") or []
+    if not paths:
+        return {}
+    if commit.get("is_dependency_bump"):
+        return {"Dependencies": 1.0}
+    counts: dict[str, int] = defaultdict(int)
+    for p in paths:
+        lang = _file_language(p)
+        if lang:
+            counts[lang] += 1
+    if not counts:
+        return {}
+    total = sum(counts.values())
+    return {k: v / total for k, v in counts.items()}
+
+
+_LANGUAGE_BY_EXTENSION: dict[str, str] = {
+    "py": "Python", "pyi": "Python",
+    "ts": "TypeScript", "tsx": "TypeScript",
+    "js": "JavaScript", "jsx": "JavaScript", "mjs": "JavaScript", "cjs": "JavaScript",
+    "go": "Go",
+    "rs": "Rust",
+    "java": "Java",
+    "kt": "Kotlin", "kts": "Kotlin",
+    "scala": "Scala",
+    "swift": "Swift",
+    "rb": "Ruby",
+    "cpp": "C++", "cc": "C++", "cxx": "C++", "hpp": "C++", "hxx": "C++",
+    "c": "C", "h": "C",
+    "cs": "C#",
+    "php": "PHP",
+    "clj": "Clojure", "cljs": "Clojure",
+    "ex": "Elixir", "exs": "Elixir",
+    "elm": "Elm",
+    "lua": "Lua",
+    "m": "Objective-C", "mm": "Objective-C",
+    "dart": "Dart",
+    "sol": "Solidity",
+    "vue": "Vue",
+    "svelte": "Svelte",
+    "sql": "SQL",
+    "tf": "Terraform", "tfvars": "Terraform",
+    "yml": "YAML", "yaml": "YAML",
+    "json": "JSON",
+    "toml": "TOML",
+    "md": "Markdown", "rst": "Markdown", "adoc": "Markdown",
+    "sh": "Shell", "bash": "Shell", "zsh": "Shell",
+    "lkml": "LookML", "lookml": "LookML",
+}
+
+
+def _file_language(path: str) -> str | None:
+    if not path:
+        return None
+    base = path.rsplit("/", 1)[-1].lower()
+    if base == "dockerfile" or base.startswith("dockerfile."):
+        return "Dockerfile"
+    if base in {"makefile", "rakefile", "gemfile"}:
+        return base.capitalize()
+    if "." not in base:
+        return None
+    ext = base.rsplit(".", 1)[1]
+    return _LANGUAGE_BY_EXTENSION.get(ext)
 
 
 def _file_kind(path: str) -> str:

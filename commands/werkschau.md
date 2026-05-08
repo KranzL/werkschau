@@ -248,27 +248,49 @@ The issue number appears in the masthead ("Vol. I · No. N").
 
    Default to the auto-suggested value if the user picks option 1.
 
-## Step 5: Extract
+## Step 5: Extract (with cache)
 
-Resolve a tmp prefix tied to the user's id, then run extract for every non-VP person in the org in one shot:
+Werkschau caches extracts and narratives at `~/.werkschau/extracts/`, keyed by date window, so re-running for the same week doesn't re-pull from GitHub. Resolve the cache paths:
 
 ```bash
-TMPID=$(id -u)
+mkdir -p ~/.werkschau/extracts
+# Compute the window's start date in YYYY-MM-DD form. For durations like 7d/14d/30d:
+SINCE_DATE=$(date -v-${SINCE_DAYS}d +%Y-%m-%d 2>/dev/null || date -d "${SINCE_DAYS} days ago" +%Y-%m-%d)
+UNTIL_DATE=$(date +%Y-%m-%d)
+EXTRACT_PATH="$HOME/.werkschau/extracts/extract-${SINCE_DATE}-to-${UNTIL_DATE}.json"
+NARRATIVES_PATH="$HOME/.werkschau/extracts/narratives-${SINCE_DATE}-to-${UNTIL_DATE}.json"
+```
+
+(For ISO `<SINCE>` values, use the date portion directly.)
+
+**Check the cache:**
+
+```bash
+test -f "$EXTRACT_PATH" && echo CACHED || echo NEW
+```
+
+If `CACHED`, **AskUserQuestion** with header "Cache" and question "An extract for this window already exists at `~/.werkschau/extracts/`. Reuse it?":
+- Option 1: "Reuse cached extract (instant, no GitHub calls)"
+- Option 2: "Re-pull fresh from GitHub (overwrites cache, costs API quota)"
+
+If the user picks Option 1, skip the extract command below and proceed to Step 6.
+
+If `NEW` or the user picked Option 2, run the extract:
+
+```bash
 ${CLAUDE_PLUGIN_ROOT}/.venv/bin/werkschau extract \
   --org <ORG_PATH> \
   --since "<SINCE>" \
-  --output "/tmp/werkschau-extract-${TMPID}.json"
+  --output "$EXTRACT_PATH"
 ```
 
-Stream stderr so the user sees discovery progress per person.
-
-If a person reports "no authored commits found in window," note it but continue — the report still includes them with a "No commit-visible activity this week." narrative.
+Stream stderr so the user sees discovery progress per person. If a person reports "no authored commits found in window," note it but continue — the report still includes them with a "No commit-visible activity this week." narrative.
 
 ## Step 6: Load extract + org
 
 Read both JSON files via `Read`:
 
-- `/tmp/werkschau-extract-${TMPID}.json` — the extract payload, with `users[]`
+- `$EXTRACT_PATH` — the extract payload, with `users[]`
 - `<ORG_PATH>` — the org tree
 
 For each person, you'll need: github handle, level, role, manager, director.
@@ -309,28 +331,28 @@ Trust the diffs over the heuristic when the diffs make a more specific cluster n
 
 ## Step 8: Write per-person briefs
 
-For each scored person (every non-VP — directors, managers, ICs, all of them), write a SHORT, scannable brief grounded in their commits + sampled diffs and the person's `description` from `org.json`.
+For each scored person (every non-VP — directors, managers, ICs, all of them), write a substantive brief grounded in their commits + sampled diffs and the person's `description` from `org.json`. **Target ~80-150 words for an active week.** Bullets are the substance — give the reader a real understanding of what shipped, not just a label.
 
 **The output format is rigid markdown:**
 
 ```
-<one summary sentence, <= 25 words>
+<summary line: 1-2 sentences capturing the shape of the week>
 
-- **<Initiative or subsystem name>**: <one specific sentence, <= 25 words>
-- **<Initiative or subsystem name>**: <one specific sentence, <= 25 words>
+- **<Initiative or subsystem name>**: <2-3 sentences: what the subsystem is, what specifically changed, concrete impact if visible from the diffs>
+- **<Initiative or subsystem name>**: <2-3 sentences, same depth>
 ```
 
-Up to **four** bullets. Most weeks have 1–3. Skip bullets entirely if there's nothing material.
+Up to **four** bullets. Most weeks have 2–3.
 
 **Format rules (strict):**
 
-- Each bullet starts with the initiative or subsystem name in `**bold**` followed by a colon and ONE specific sentence. Name actual subsystems, files (`src/auth/tokens.py`), functions, services, or commit-message phrases.
-- *"Added a search/commits fallback so discovery works in all-private orgs"* is right. *"Improved discovery"* is wrong.
-- If the diff data doesn't support specificity, hedge ("touched the auth module") rather than invent.
-- **Use the person's `description` field as ground truth** for what they own. If Alice's description says "Owns the auth subsystem" and her commits touch `src/auth/`, anchor the bullet to that. Don't restate the description verbatim.
-- Roll dependabot bumps, README touch-ups, lockfile-only commits, and version pins into a single `**Maintenance**` bullet at most. Don't list every minor commit.
-- For Senior+ ICs / managers / directors: if commit volume is low, note in the **summary line** that the leverage lives outside commits (review, design, mentorship). Skip the bullets.
-- For Data Scientists, ML Engineers, Data Analysts: low commit volume is normal because most work is in notebooks, BI tools, or dashboards that don't commit.
+- Each bullet is 2-3 sentences. Read the diff snippets and describe: (1) what the subsystem is briefly if the reader might not know, (2) which files, functions, classes, schemas, or configs got touched and how, (3) the concrete impact if visible — a perf win, a new capability, a bug squashed, an external surface added. Cite specific file paths, function names, or commit-message phrases.
+- *"Swapped the per-row linear scan in `match_user` for a `set` membership check, cutting the hot-path from O(n) to O(1)"* is right. *"Improved performance"* is wrong.
+- If the diff snippets don't support that level of specificity, hedge ("touched the auth middleware in ways the available diff snippets don't fully reveal") rather than invent.
+- **Use the person's `description` field as ground truth** for what they own — but go deeper than the description does. Don't restate it verbatim.
+- Roll dependabot bumps, README touch-ups, lockfile-only commits, and version pins into a single `**Maintenance**` bullet, kept to one sentence.
+- For Senior+ ICs / managers / directors with low commit volume: note in the **summary line** that leverage likely lives outside commits (review, design, mentorship). Still write 1-2 bullets if there's modest commit-visible work — describe it in detail rather than skipping.
+- For Data Scientists, ML Engineers, Data Analysts: low commit volume is normal because most work happens in notebooks, BI tools, or dashboards.
 - If `commit_count == 0`: write only the summary line, no bullets. Phrase: `"No commit-visible activity this week. <one short clause on why this is normal for the role/level>."`
 - Never emit a thumbs-up/thumbs-down rating. Describe what the commits show; the reader decides.
 - Never invent commit content the diffs don't support.
@@ -339,14 +361,16 @@ Up to **four** bullets. Most weeks have 1–3. Skip bullets entirely if there's 
 **Example brief** (Alice, L4 SWE, owns auth subsystem):
 
 ```
-Three threads of auth work this week, anchored on a token-rotation rewrite.
+Three concurrent threads this week, anchored on a token-rotation rewrite that retired a fragile cron job.
 
-- **Token rotation**: rewrote refresh-token TTL handling in `src/auth/tokens.py`, swapping the cron sweep for event-driven invalidation.
-- **Search**: scoped the new Postgres FTS index for the search service.
-- **Maintenance**: lockfile bumps and a CI matrix update.
+- **Token rotation**: the auth subsystem stores refresh tokens in Redis with a 30-day TTL. This week Alice replaced the every-15-minutes cron that swept expired tokens with event-driven invalidation: `src/auth/tokens.py` now publishes a `token.expired` message on Redis pub/sub, and a worker in `src/auth/cleanup.py` listens and deletes. Two integration tests (`tests/auth/test_rotation.py`) cover the new flow. The cron job is removed in the same PR; downstream services keep working without changes.
+- **Search**: scoped the new Postgres FTS index for the catalog service. The schema migration in `migrations/0042_fts.sql` adds a `tsvector` column with a GIN index; query path in `src/search/handler.py` not yet rewritten — expected next week.
+- **Maintenance**: lockfile bumps and a CI matrix update for Python 3.12.
 ```
 
-Build a JSON object mapping handle → markdown brief and write it to `/tmp/werkschau-narratives-${TMPID}.json`:
+**Narrative cache.** If `$NARRATIVES_PATH` already exists, AskUserQuestion: "Reuse cached narratives or re-write from scratch?". Reuse is instant; rewriting takes time but lets you incorporate edits to the brief format or new diff signal.
+
+Build a JSON object mapping handle → markdown brief and write it to `$NARRATIVES_PATH`:
 
 ```json
 {
@@ -363,8 +387,8 @@ Use `Write` to save it.
 ```bash
 ${CLAUDE_PLUGIN_ROOT}/.venv/bin/werkschau report-org \
   --org <ORG_PATH> \
-  --extract "/tmp/werkschau-extract-${TMPID}.json" \
-  --narratives "/tmp/werkschau-narratives-${TMPID}.json" \
+  --extract "$EXTRACT_PATH" \
+  --narratives "$NARRATIVES_PATH" \
   --since "<SINCE>" \
   --issue <ISSUE> \
   --output "werkschau-$(date +%Y-%m-%d).html"
@@ -372,15 +396,11 @@ ${CLAUDE_PLUGIN_ROOT}/.venv/bin/werkschau report-org \
 
 The `--narratives` flag tells `report-org` to use the pre-baked paragraphs and skip the LLM API call. No key needed.
 
-## Step 10: Confirm and cleanup
+## Step 10: Confirm
 
-Tell the user the saved filename. Show a one-line summary: how many contributors, how many in "locked in" / "not locked in", median output of the org.
+Tell the user the saved HTML filename. Show a one-line summary: how many contributors, how many in "locked in" / "not locked in", and where the cached extract + narratives live (`~/.werkschau/extracts/`).
 
-Cleanup:
-
-```bash
-rm -f "/tmp/werkschau-extract-${TMPID}.json" "/tmp/werkschau-narratives-${TMPID}.json"
-```
+The cache is **not** auto-deleted — re-running `/werkschau` for the same window will reuse it and skip both the GitHub re-pull and the brief writing. To force a fresh pull, delete the extract file or pick "Re-pull fresh" when prompted.
 
 Tell the user they can attach the HTML directly to their VP's email.
 

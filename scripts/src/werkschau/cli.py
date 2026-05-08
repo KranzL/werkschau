@@ -322,7 +322,7 @@ def report_org(
 ) -> None:
     from .org import load_org
     from .render import UserBlock, render_html
-    from .scoring import score_user
+    from .scoring import offgrid_scores, score_user
 
     use_llm = not no_narrative and not narratives_path
     if use_llm:
@@ -389,6 +389,9 @@ def report_org(
             ).strip()
 
         blocks.append(UserBlock(person=person, scores=scores, narrative=narrative))
+
+    for person in org.offgrid_people():
+        blocks.append(UserBlock(person=person, scores=offgrid_scores(), narrative=""))
 
     click.echo("Rendering HTML", err=True)
     html_text = render_html(

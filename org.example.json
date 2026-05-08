@@ -47,7 +47,8 @@
                 {"github": "alice", "name": "Alice Doe",    "level": "l4", "role": "swe", "description": "Owns the auth subsystem and session-token rotation."},
                 {"github": "carol", "name": "Carol Lee",    "level": "l3", "role": "swe", "description": "Owns the search service and the query-builder layer."},
                 {"github": "eve",   "name": "Eve Martinez", "level": "l2", "role": "swe", "description": "Working through the API onboarding curriculum on the billing endpoints."},
-                {"github": "ian",   "name": "Ian Park",     "level": "l4", "role": "ds",  "description": "Pricing experiments and uplift modeling for billing."}
+                {"github": "ian",   "name": "Ian Park",     "level": "l4", "role": "ds",  "description": "Pricing experiments and uplift modeling for billing."},
+                {"name": "Mona Lisa", "level": "l3", "role": "swe", "description": "Joining next quarter; no GitHub account on record yet."}
               ]
             },
             {
