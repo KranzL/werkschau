@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 LEVELS: tuple[str, ...] = (
-    "de1",
-    "de2",
-    "de3",
+    "l1",
+    "l2",
+    "l3",
     "senior",
     "staff",
     "senior staff",
@@ -13,9 +13,9 @@ LEVELS: tuple[str, ...] = (
 )
 
 LEVEL_BASELINE_MINUTES: dict[str, int] = {
-    "de1": 600,
-    "de2": 700,
-    "de3": 700,
+    "l1": 600,
+    "l2": 700,
+    "l3": 700,
     "senior": 600,
     "staff": 400,
     "senior staff": 300,
@@ -87,17 +87,23 @@ def normalize_level(value: str | None) -> str | None:
     if cleaned in LEVELS:
         return cleaned
     aliases = {
-        "junior": "de1",
-        "jr": "de1",
-        "intern": "de1",
-        "l1": "de1",
-        "l2": "de2",
-        "mid": "de2",
-        "middle": "de2",
-        "mid-level": "de2",
-        "midlevel": "de2",
-        "l3": "de2",
-        "l4": "de3",
+        "junior": "l1",
+        "jr": "l1",
+        "intern": "l1",
+        "engineer 1": "l1",
+        "swe 1": "l1",
+        "de1": "l1",
+        "mid": "l2",
+        "middle": "l2",
+        "mid-level": "l2",
+        "midlevel": "l2",
+        "engineer 2": "l2",
+        "swe 2": "l2",
+        "de2": "l2",
+        "engineer 3": "l3",
+        "swe 3": "l3",
+        "de3": "l3",
+        "l4": "senior",
         "sr": "senior",
         "l5": "senior",
         "staff+": "staff",

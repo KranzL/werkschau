@@ -141,16 +141,17 @@ Pick the first that applies:
    For **each** employee **with a GitHub handle**, ask level and role using the **IC-track level** options:
 
    - Question 1 — header `"Level"`, question `"Level for <Full Name> (<handle>)?"`. Options:
-     - `"Senior"` — desc: "6-10 yrs, owns areas, drives reviews"
+     - `"L2"` — desc: "Autonomous on features"
+     - `"L3"` — desc: "Senior IC track, pre-Senior"
+     - `"Senior"` — desc: "Owns areas, drives reviews"
      - `"Staff"` — desc: "Cross-team RFCs, mentorship, hiring"
-     - `"Principal"` — desc: "Org-wide tech strategy, low commit volume by design"
-     - `"DE3"` — desc: "Senior IC track, pre-Senior"
    - Question 2 — header `"Role"`. Same role options.
 
-   The auto-added **Other** option captures anything outside the four explicit choices. For "Other" responses, normalize the user's typed value against the canonical lists:
+   The auto-added **Other** option (free text) captures anything outside the four explicit choices — L1, Senior Staff, Principal, Senior Principal, Distinguished, or any internal alias your org uses. For "Other" responses, normalize against the canonical lists:
 
-   - Levels: `de1, de2, de3, senior, staff, senior staff, principal, senior principal, distinguished`
-   - Manager-track aliases that get normalized: `manager` → `staff`, `senior manager` → `senior staff`, `director` → `principal`, `senior director` → `senior principal`, `vp` → `distinguished`.
+   - Levels: `l1, l2, l3, senior, staff, senior staff, principal, senior principal, distinguished`
+   - IC-track aliases: `junior` → `l1`, `mid` → `l2`, `de1` / `de2` / `de3` → `l1` / `l2` / `l3`, `engineer 1` / `engineer 2` / `engineer 3` → `l1` / `l2` / `l3`.
+   - Manager-track aliases: `manager` → `staff`, `senior manager` → `senior staff`, `director` → `principal`, `senior director` → `senior principal`, `vp` → `distinguished`.
    - Roles: `swe, ae, mle, ds, da`
 
    If a typed value can't be normalized, re-ask just that field.

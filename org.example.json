@@ -17,8 +17,8 @@
           "role": "swe",
           "employees": [
             {"github": "alice", "name": "Alice Doe",      "level": "senior", "role": "swe"},
-            {"github": "carol", "name": "Carol Lee",      "level": "de3",    "role": "swe"},
-            {"github": "eve",   "name": "Eve Martinez",   "level": "de2",    "role": "swe"},
+            {"github": "carol", "name": "Carol Lee",      "level": "l3",    "role": "swe"},
+            {"github": "eve",   "name": "Eve Martinez",   "level": "l2",    "role": "swe"},
             {"github": "ian",   "name": "Ian Park",       "level": "senior", "role": "ds"}
           ]
         },
@@ -29,7 +29,7 @@
           "role": "swe",
           "employees": [
             {"github": "bob",   "name": "Bob Clark",      "level": "senior staff", "role": "swe"},
-            {"github": "hank",  "name": "Hank Reed",      "level": "de1",          "role": "swe"},
+            {"github": "hank",  "name": "Hank Reed",      "level": "l1",          "role": "swe"},
             {"github": "frank", "name": "Frank Yates",    "level": "senior",       "role": "mle"}
           ]
         },
@@ -40,8 +40,8 @@
           "role": "mle",
           "employees": [
             {"github": "jane",  "name": "Jane Singh",     "level": "staff", "role": "ae"},
-            {"github": "dave",  "name": "Dave Hill",      "level": "de1",   "role": "da"},
-            {"github": "grace", "name": "Grace Carter",   "level": "de2",   "role": "da"}
+            {"github": "dave",  "name": "Dave Hill",      "level": "l1",   "role": "da"},
+            {"github": "grace", "name": "Grace Carter",   "level": "l2",   "role": "da"}
           ]
         }
       ]
