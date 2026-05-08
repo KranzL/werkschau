@@ -365,13 +365,24 @@ def report_org(
         else:
             from .reporter import generate_brief
             sample_diffs = _gather_sample_diffs(user_payload, diff_samples_per_user)
-            click.echo(f"[{person.github}] writing brief from {len(sample_diffs)} sampled diffs", err=True)
+            cluster_hints = [
+                {
+                    "name": i.name,
+                    "weighted_minutes": round(i.weighted_minutes),
+                    "commit_count": i.commit_count,
+                    "repos": list(i.repos),
+                    "sample_messages": list(i.sample_messages),
+                }
+                for i in scores.initiatives[:6]
+            ]
+            click.echo(f"[{person.github}] writing brief from {len(sample_diffs)} sampled diffs, {len(cluster_hints)} inferred initiatives", err=True)
             narrative = generate_brief(
                 user_payload,
                 role=person.role,
                 level=person.level,
                 sample_diffs=sample_diffs,
                 description=person.description,
+                initiatives=cluster_hints,
                 provider=provider,
                 model=model,
                 base_url=base_url,

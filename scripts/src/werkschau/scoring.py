@@ -2,58 +2,268 @@ from __future__ import annotations
 
 import math
 import os
+import re
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 
-from .levels import baseline_minutes
+
+WORK_KIND_WEIGHTS: dict[str, float] = {
+    "code": 1.0,
+    "data_pipeline": 1.0,
+    "test": 1.0,
+    "infra": 1.0,
+    "config": 0.6,
+    "docs": 0.2,
+    "lockfile": 0.1,
+    "other": 0.5,
+}
+
+CLUSTER_TIME_WINDOW = timedelta(hours=48)
+MIN_TOKEN_LENGTH = 4
 
 
-WORK_CATEGORIES: tuple[str, ...] = (
-    "Features",
-    "Bug fixes",
-    "Refactor",
-    "Infrastructure",
-    "Tests",
-    "Documentation",
-)
+_STOPWORDS: frozenset[str] = frozenset({
+    "feat", "feats", "feature", "features", "fix", "fixes", "fixed", "hotfix",
+    "chore", "chores", "refactor", "refactors", "refactored", "refactoring",
+    "docs", "doc", "documentation", "test", "tests", "testing",
+    "update", "updates", "updated", "updating",
+    "add", "adds", "added", "adding",
+    "remove", "removes", "removed", "removing",
+    "delete", "deletes", "deleted", "deleting",
+    "bump", "bumps", "bumped", "version", "versions", "versioning",
+    "config", "configs", "configure", "configured", "configuration",
+    "build", "builds", "built", "deploy", "deploys", "deployed", "deployment",
+    "merge", "merges", "merged", "revert", "reverts", "reverted",
+    "improve", "improves", "improved", "improving", "improvement",
+    "make", "makes", "made", "making", "use", "uses", "used", "using",
+    "support", "supports", "supported", "supporting",
+    "create", "creates", "created", "creating",
+    "rename", "renames", "renamed", "renaming",
+    "from", "into", "with", "this", "that", "these", "those", "their", "them",
+    "and", "the", "for", "but", "out", "off", "now", "new", "old", "all",
+    "more", "less", "most", "least", "some", "any", "any", "many", "much",
+    "small", "big", "tiny", "large",
+    "wip", "todo", "fixme",
+    "change", "changes", "changed", "changing",
+    "tweak", "tweaks", "tweaked", "tidy", "polish", "cleanup", "clean",
+    "minor", "major", "patch", "patches", "patched",
+    "thing", "things", "stuff", "misc",
+})
 
-NEUTRAL_BASELINE_MINUTES: float = 600.0
+
+@dataclass(frozen=True)
+class Initiative:
+    name: str
+    weighted_minutes: float
+    commit_count: int
+    repos: tuple[str, ...]
+    sample_messages: tuple[str, ...]
+    sample_shas: tuple[str, ...]
+
+
+OUTPUT_BASELINE_MINUTES = 600.0
 
 
 @dataclass(frozen=True)
 class Scores:
-    output: float
-    focus: float
-    work_label: str
     weighted_minutes: float
     commit_count: int
     repo_count: int
+    output: float
+    focus: float
+    work_kind_mix: dict[str, float]
+    initiatives: tuple[Initiative, ...]
+
+    @property
+    def initiative_count(self) -> int:
+        return len(self.initiatives)
+
+    @property
+    def top_initiative(self) -> Initiative | None:
+        return self.initiatives[0] if self.initiatives else None
+
+    @property
+    def top_initiative_share(self) -> float:
+        if not self.initiatives or self.weighted_minutes <= 0:
+            return 0.0
+        return self.initiatives[0].weighted_minutes / self.weighted_minutes
 
 
 def score_user(user_payload: dict, level: str | None, role: str | None, window_days: int) -> Scores:
     commits = user_payload.get("commits", []) or []
-    weighted = sum(_complexity_weighted_effort(c) for c in commits)
-    output = _output_score(weighted, window_days)
-    focus = _focus_score(commits)
-    label = _dominant_work_label(commits)
+    weighted_total = 0.0
+    kind_totals: dict[str, float] = defaultdict(float)
+    for c in commits:
+        w = _commit_effort(c)
+        weighted_total += w
+        for kind, share in _commit_kind_mix(c).items():
+            kind_totals[kind] += w * share
+
+    if weighted_total > 0:
+        work_kind_mix = {k: v / weighted_total for k, v in kind_totals.items() if v > 0}
+    else:
+        work_kind_mix = {}
+
+    initiatives = cluster_initiatives(commits)
+    output = _output_score(weighted_total, window_days)
+    focus = _focus_score(initiatives, weighted_total, len(commits))
+
     return Scores(
-        output=output,
-        focus=focus,
-        work_label=label,
-        weighted_minutes=weighted,
+        weighted_minutes=weighted_total,
         commit_count=len(commits),
         repo_count=len({c.get("repo") for c in commits if c.get("repo")}),
+        output=output,
+        focus=focus,
+        work_kind_mix=dict(sorted(work_kind_mix.items(), key=lambda kv: kv[1], reverse=True)),
+        initiatives=tuple(initiatives),
     )
 
 
-def _output_score(weighted: float, window_days: int) -> float:
-    if weighted <= 0:
+def _output_score(weighted_total: float, window_days: int) -> float:
+    if weighted_total <= 0:
         return -1.0
-    scaled_base = NEUTRAL_BASELINE_MINUTES * (window_days / 7.0)
-    return _clip(math.log2(weighted / scaled_base), -1.0, 1.0)
+    scaled = OUTPUT_BASELINE_MINUTES * (window_days / 7.0)
+    return _clip(math.log2(weighted_total / scaled), -1.0, 1.0)
 
 
-def _complexity_weighted_effort(commit: dict) -> float:
+def _focus_score(initiatives: list[Initiative] | tuple[Initiative, ...], weighted_total: float, commit_count: int) -> float:
+    if commit_count < 3 or weighted_total <= 0 or not initiatives:
+        return 0.0
+    herfindahl = sum((i.weighted_minutes / weighted_total) ** 2 for i in initiatives)
+    return _clip(2.0 * herfindahl - 1.0, -1.0, 1.0)
+
+
+def _clip(x: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, x))
+
+
+def cluster_initiatives(commits: list[dict]) -> list[Initiative]:
+    if not commits:
+        return []
+
+    enriched: list[dict] = []
+    for c in commits:
+        if c.get("is_merge"):
+            continue
+        msg = (c.get("message_first_line") or "")
+        scope = _conventional_scope(msg)
+        tokens = _meaningful_tokens(msg)
+        dirs = _top_dirs(c.get("file_paths_sample") or [], depth=2)
+        ts = _parse_iso(c.get("committer_date_utc"))
+        if ts is None:
+            continue
+        enriched.append({
+            "commit": c,
+            "scope": scope,
+            "tokens": tokens,
+            "dirs": dirs,
+            "ts": ts,
+        })
+
+    if not enriched:
+        return []
+
+    enriched.sort(key=lambda e: e["ts"])
+    n = len(enriched)
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i: int, j: int) -> None:
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[rj] = ri
+
+    for i in range(n):
+        ei = enriched[i]
+        for j in range(i + 1, n):
+            ej = enriched[j]
+            if ej["ts"] - ei["ts"] > CLUSTER_TIME_WINDOW:
+                break
+            if ei["scope"] and ei["scope"] == ej["scope"]:
+                union(i, j); continue
+            if ei["tokens"] and ei["tokens"] & ej["tokens"]:
+                union(i, j); continue
+            if ei["dirs"] and ei["dirs"] & ej["dirs"]:
+                union(i, j); continue
+
+    cluster_members: dict[int, list[dict]] = defaultdict(list)
+    for i in range(n):
+        cluster_members[find(i)].append(enriched[i])
+
+    initiatives: list[Initiative] = []
+    for members in cluster_members.values():
+        commits_in = [m["commit"] for m in members]
+        weighted = sum(_commit_effort(c) for c in commits_in)
+        if weighted <= 0:
+            continue
+        token_counts: dict[str, int] = defaultdict(int)
+        for m in members:
+            for t in m["tokens"]:
+                token_counts[t] += 1
+        scope_counts: dict[str, int] = defaultdict(int)
+        for m in members:
+            if m["scope"]:
+                scope_counts[m["scope"]] += 1
+        dir_counts: dict[str, int] = defaultdict(int)
+        for m in members:
+            for d in m["dirs"]:
+                dir_counts[d] += 1
+        repos = tuple(sorted({c.get("repo") for c in commits_in if c.get("repo")}))
+        name = _initiative_name(token_counts, scope_counts, dir_counts, repos, commits_in)
+        initiatives.append(Initiative(
+            name=name,
+            weighted_minutes=weighted,
+            commit_count=len(commits_in),
+            repos=repos,
+            sample_messages=tuple(
+                (c.get("message_first_line") or "")[:120]
+                for c in sorted(commits_in, key=lambda c: _commit_effort(c), reverse=True)[:5]
+            ),
+            sample_shas=tuple(
+                (c.get("sha") or "")[:8]
+                for c in sorted(commits_in, key=lambda c: _commit_effort(c), reverse=True)[:5]
+            ),
+        ))
+
+    initiatives.sort(key=lambda i: i.weighted_minutes, reverse=True)
+    return initiatives
+
+
+def _initiative_name(
+    token_counts: dict[str, int],
+    scope_counts: dict[str, int],
+    dir_counts: dict[str, int],
+    repos: tuple[str, ...],
+    commits: list[dict],
+) -> str:
+    if scope_counts:
+        scope, _ = max(scope_counts.items(), key=lambda kv: kv[1])
+        return scope.replace("-", " ").replace("_", " ")
+    if token_counts:
+        ranked = sorted(token_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        top_two = [t for t, c in ranked[:2] if c >= 1]
+        if len(top_two) >= 2 and ranked[1][1] >= max(2, ranked[0][1] // 2):
+            return f"{top_two[0]} {top_two[1]}"
+        return top_two[0]
+    if dir_counts:
+        d, _ = max(dir_counts.items(), key=lambda kv: kv[1])
+        return d.replace("/", " ")
+    if repos:
+        repo = repos[0]
+        return repo.split("/", 1)[1] if "/" in repo else repo
+    if commits:
+        msg = (commits[0].get("message_first_line") or "").strip()
+        return msg[:48] if msg else "untitled"
+    return "untitled"
+
+
+def _commit_effort(commit: dict) -> float:
     base = float(commit.get("heuristic_effort_minutes") or 0)
     if base <= 0:
         return 0.0
@@ -70,7 +280,7 @@ def _complexity_weighted_effort(commit: dict) -> float:
     if files >= 10 and churn > 0 and 0.3 < (additions / churn) < 0.7:
         mult *= 1.3
     if commit.get("test_ratio") and float(commit.get("test_ratio")) > 0.3:
-        mult *= 1.15
+        mult *= 1.1
     if commit.get("is_dependency_bump"):
         mult *= 0.3
     if commit.get("is_merge") or commit.get("is_revert"):
@@ -78,134 +288,136 @@ def _complexity_weighted_effort(commit: dict) -> float:
     if files <= 1 and churn <= 5:
         mult *= 0.6
     mult = max(0.25, min(2.0, mult))
-    return base * mult
+    work_weight = _commit_work_kind_weight(commit)
+    return base * mult * work_weight
 
 
-def _focus_score(commits: list[dict]) -> float:
-    if len(commits) < 3:
-        return 0.0
-    effort_per_repo: dict[str, float] = defaultdict(float)
-    for c in commits:
-        repo = c.get("repo") or ""
-        if not repo:
-            continue
-        effort_per_repo[repo] += _complexity_weighted_effort(c)
-    total = sum(effort_per_repo.values())
-    if total <= 0:
-        return 0.0
-    h = sum((v / total) ** 2 for v in effort_per_repo.values())
-    repo_score = _clip(2.0 * h - 1.0, -1.0, 1.0)
-
-    avg_commit_effort = total / len(commits)
-    depth_score = _clip(math.log2(max(avg_commit_effort, 1.0) / 30.0), -1.0, 1.0)
-
-    return _clip(0.4 * repo_score + 0.6 * depth_score, -1.0, 1.0)
-
-
-def _dominant_work_label(commits: list[dict]) -> str:
-    if not commits:
-        return "—"
-    weighted_by_cat: dict[str, float] = defaultdict(float)
-    weighted_by_area: dict[str, float] = defaultdict(float)
-    total = 0.0
-    for c in commits:
-        cat = classify_commit(c)
-        area = _top_area(c)
-        w = _complexity_weighted_effort(c)
-        weighted_by_cat[cat] += w
-        if area:
-            weighted_by_area[area] += w
-        total += w
-    if total <= 0:
-        return "—"
-
-    if weighted_by_cat:
-        top_cat, top_w = max(weighted_by_cat.items(), key=lambda kv: kv[1])
-        cat_pct = top_w / total
-    else:
-        top_cat, cat_pct = "", 0.0
-
-    if top_cat in ("Bug fixes", "Refactor", "Infrastructure", "Tests", "Documentation") and cat_pct >= 0.5:
-        return f"{top_cat}|{round(cat_pct * 100)}"
-
-    if weighted_by_area:
-        top_area, area_w = max(weighted_by_area.items(), key=lambda kv: kv[1])
-        area_pct = area_w / total
-        if area_pct >= 0.4:
-            return f"{top_area}|{round(area_pct * 100)}"
-
-    return "Mixed"
-
-
-def _top_area(commit: dict) -> str | None:
-    repo = commit.get("repo") or ""
-    files = commit.get("file_paths_sample") or []
-    if not files:
-        return repo.split("/", 1)[1] if "/" in repo else repo or None
-    dirs = []
-    for f in files:
-        parts = f.split("/")
-        if len(parts) >= 3:
-            dirs.append(parts[1])
-        elif len(parts) == 2:
-            dirs.append(parts[0])
-    if not dirs:
-        return repo.split("/", 1)[1] if "/" in repo else repo or None
-    counts: dict[str, int] = defaultdict(int)
-    for d in dirs:
-        counts[d] += 1
-    return max(counts.items(), key=lambda kv: kv[1])[0]
-
-
-def classify_commit(commit: dict) -> str:
-    msg = (commit.get("message_first_line") or "").lower().strip()
-    files = commit.get("file_paths_sample") or []
+def _commit_work_kind_weight(commit: dict) -> float:
+    paths = commit.get("file_paths_sample") or []
+    if not paths:
+        return WORK_KIND_WEIGHTS["other"]
     if commit.get("is_dependency_bump"):
-        return "Infrastructure"
-    if msg.startswith(("feat:", "feat(", "feature:", "feat ", "feature ")):
-        return "Features"
-    if msg.startswith(("fix:", "fix(", "bug:", "fix ", "bug ", "hotfix")):
-        return "Bug fixes"
-    if msg.startswith(("refactor:", "refactor(", "refactor ", "cleanup", "refactor ")):
-        return "Refactor"
-    if msg.startswith(("test:", "test(", "tests:", "tests(", "test ", "tests ")):
-        return "Tests"
-    if msg.startswith(("docs:", "docs(", "doc:", "doc ", "docs ", "readme", "documentation")):
-        return "Documentation"
-    if msg.startswith(("ci:", "ci(", "build:", "build(", "chore:", "chore(", "perf:", "perf(")):
-        return "Infrastructure"
-    test_ratio = float(commit.get("test_ratio") or 0)
-    if test_ratio > 0.6:
-        return "Tests"
-    if files and all(_looks_doc(p) for p in files):
-        return "Documentation"
-    if files and all(_looks_infra(p) for p in files):
-        return "Infrastructure"
-    if files and all(_looks_test(p) for p in files):
-        return "Tests"
-    return "Features"
+        return WORK_KIND_WEIGHTS["lockfile"]
+    weights = [WORK_KIND_WEIGHTS.get(_file_kind(p), WORK_KIND_WEIGHTS["other"]) for p in paths]
+    return sum(weights) / len(weights)
 
 
-def _looks_doc(path: str) -> bool:
+def _commit_kind_mix(commit: dict) -> dict[str, float]:
+    paths = commit.get("file_paths_sample") or []
+    if not paths:
+        return {"other": 1.0}
+    if commit.get("is_dependency_bump"):
+        return {"lockfile": 1.0}
+    counts: dict[str, int] = defaultdict(int)
+    for p in paths:
+        counts[_file_kind(p)] += 1
+    total = sum(counts.values())
+    return {k: v / total for k, v in counts.items()}
+
+
+def _file_kind(path: str) -> str:
+    if not path:
+        return "other"
     p = path.lower()
-    return p.endswith((".md", ".rst", ".txt")) or "/docs/" in p or p.startswith("docs/")
+    base = p.rsplit("/", 1)[-1]
+
+    if base in {
+        "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock",
+        "pipfile.lock", "go.sum", "cargo.lock", "gemfile.lock", "composer.lock",
+        "uv.lock", "bun.lockb", "requirements.txt",
+    }:
+        return "lockfile"
+
+    if p.endswith((".md", ".rst", ".txt", ".adoc")) or "/docs/" in p or p.startswith("docs/"):
+        return "docs"
+
+    if (
+        "/tests/" in p or "/test/" in p or "/__tests__/" in p
+        or p.startswith(("tests/", "test/"))
+        or p.endswith((
+            ".test.ts", ".test.tsx", ".test.js", ".test.jsx",
+            ".spec.ts", ".spec.tsx", ".spec.js", ".spec.jsx",
+        ))
+        or base.startswith("test_") or base.endswith("_test.py")
+        or base.endswith("_test.go") or base.endswith("_spec.rb")
+    ):
+        return "test"
+
+    if (
+        p.startswith((
+            ".github/", "ci/", "ops/", "infra/", "deploy/", "k8s/",
+            "kubernetes/", "helm/", "terraform/", ".gitlab/", ".circleci/",
+        ))
+        or p.endswith((".tf", ".tfvars"))
+        or base in {"dockerfile", ".dockerignore", ".gitlab-ci.yml", "makefile"}
+        or "/dockerfile" in p
+    ):
+        return "infra"
+
+    if (
+        p.endswith(".sql")
+        or "/dags/" in p or "/airflow/" in p
+        or "/dbt/" in p or "/dbt_project" in p
+        or "/models/" in p and (p.endswith((".sql", ".yml", ".yaml")))
+        or "/seeds/" in p or "/macros/" in p or "/snapshots/" in p
+        or "/looker/" in p or p.endswith((".lkml", ".lookml"))
+    ):
+        return "data_pipeline"
+
+    if p.endswith((
+        ".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+        ".go", ".rs", ".java", ".kt", ".kts", ".scala", ".swift",
+        ".rb", ".cpp", ".cc", ".cxx", ".c", ".h", ".hpp",
+        ".cs", ".php", ".clj", ".cljs", ".ex", ".exs", ".elm",
+        ".lua", ".m", ".mm", ".dart", ".sol", ".vue", ".svelte",
+    )):
+        return "code"
+
+    if p.endswith((".yml", ".yaml", ".json", ".toml", ".ini", ".env", ".cfg", ".conf")):
+        return "config"
+
+    return "other"
 
 
-def _looks_infra(path: str) -> bool:
-    p = path.lower()
-    if p.startswith((".github/", "ci/", "ops/", "infra/", "deploy/", "k8s/", "kubernetes/")):
-        return True
-    base = os.path.basename(p)
-    return base in {"dockerfile", "makefile", "pyproject.toml", "package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "go.mod", "go.sum", ".gitignore", ".dockerignore", ".gitlab-ci.yml", ".circleci"} or p.endswith((".yml", ".yaml")) and ("github" in p or "ci" in p)
+def _conventional_scope(message: str) -> str | None:
+    m = re.match(r"^([a-zA-Z]+)\(([^)]+)\)\s*:", message.strip())
+    if m:
+        return m.group(2).strip().lower()
+    return None
 
 
-def _looks_test(path: str) -> bool:
-    p = path.lower()
-    return ("/tests/" in p or "/test/" in p or "/__tests__/" in p
-            or p.startswith(("tests/", "test/"))
-            or p.endswith((".test.ts", ".test.tsx", ".test.js", ".test.jsx", ".spec.ts", ".spec.tsx", ".spec.js", ".spec.jsx"))
-            or "_test.py" in os.path.basename(p)
-            or "test_" in os.path.basename(p))
+def _meaningful_tokens(message: str) -> set[str]:
+    msg = message.strip()
+    msg = re.sub(r"^[a-zA-Z]+(\([^)]*\))?\s*:\s*", "", msg)
+    tokens: set[str] = set()
+    for raw in re.split(r"[^a-zA-Z0-9_-]+", msg.lower()):
+        if not raw:
+            continue
+        for piece in raw.split("-"):
+            for sub in piece.split("_"):
+                if len(sub) >= MIN_TOKEN_LENGTH and sub not in _STOPWORDS and not sub.isdigit():
+                    tokens.add(sub)
+    return tokens
+
+
+def _top_dirs(paths: list[str], depth: int = 2) -> set[str]:
+    out: set[str] = set()
+    for p in paths:
+        parts = [seg for seg in p.split("/") if seg]
+        if len(parts) >= depth + 1:
+            out.add("/".join(parts[:depth]))
+        elif parts:
+            out.add(parts[0])
+    return out
+
+
+def _parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except (ValueError, AttributeError):
+        return None
 
 
 def median(values: list[float]) -> float:
@@ -219,11 +431,4 @@ def median(values: list[float]) -> float:
     return (s[mid - 1] + s[mid]) / 2.0
 
 
-def _log2(observed: float, baseline: float) -> float:
-    if observed <= 0:
-        return -1.0
-    return math.log2(observed / baseline)
-
-
-def _clip(x: float, lo: float, hi: float) -> float:
-    return max(lo, min(hi, x))
+_complexity_weighted_effort = _commit_effort

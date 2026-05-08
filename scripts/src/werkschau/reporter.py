@@ -158,6 +158,13 @@ Strict rules:
 - If the engineer's "owns" description is provided in the data, treat it as
   ground truth for what they're responsible for. Use it to disambiguate which
   subsystem a commit touches. Don't just restate the description verbatim.
+- The data also contains `inferred_initiatives`: a list of clusters the
+  scoring system inferred from commit timestamps, conventional-commit scopes,
+  message tokens, and shared directories. Each cluster has a name, weighted
+  minutes, commit count, and sample messages. Use these as a starting point
+  for your bullets — usually the top 1-3 clusters by weighted_minutes are the
+  right bullets. Override the inferred names when the diffs make a more
+  specific name obvious; you have richer signal than the heuristic does.
 - For Senior+ ICs and managers/directors: low commit volume is expected. Note
   in the summary line that the leverage likely lives outside commits (review,
   design, mentorship). Skip bullets if there's nothing material to list.
@@ -196,12 +203,13 @@ def generate_brief(
     level: str | None,
     sample_diffs: list[dict[str, Any]],
     description: str | None = None,
+    initiatives: list[dict[str, Any]] | None = None,
     provider: str = "anthropic",
     model: str | None = None,
     base_url: str | None = None,
 ) -> str:
     chosen_model = model or _DEFAULT_MODELS.get(provider, "claude-sonnet-4-6")
-    user_prompt = _build_brief_prompt(user_payload, role, level, sample_diffs, description)
+    user_prompt = _build_brief_prompt(user_payload, role, level, sample_diffs, description, initiatives)
     if provider == "anthropic":
         return _call_anthropic(_BRIEF_SYSTEM_PROMPT, user_prompt, chosen_model, base_url)
     if provider == "openai":
@@ -215,6 +223,7 @@ def _build_brief_prompt(
     level: str | None,
     sample_diffs: list[dict[str, Any]],
     description: str | None = None,
+    initiatives: list[dict[str, Any]] | None = None,
 ) -> str:
     summary = {
         "user": user_payload.get("user"),
@@ -226,6 +235,7 @@ def _build_brief_prompt(
         "repos_visited": user_payload.get("repos_visited", []),
         "total_churn": user_payload.get("total_churn", 0),
         "total_heuristic_effort_minutes": user_payload.get("total_heuristic_effort_minutes", 0),
+        "inferred_initiatives": initiatives or [],
     }
     commits_compact = []
     for c in user_payload.get("commits", []) or []:

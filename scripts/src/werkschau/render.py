@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from .org import Org, Person
-from .scoring import Scores, median
+from .scoring import Initiative, Scores, median
 
 
 @dataclass
@@ -23,7 +23,6 @@ def render_html(
     issue_number: int = 1,
     skip_briefs: bool = False,
 ) -> str:
-    by_handle = {b.person.github: b for b in blocks if b.person.github}
     by_id = {b.person.id: b for b in blocks}
     locked_in, not_locked_in = _classify_callouts(blocks)
     headline_dek = _headline_dek(blocks, locked_in, not_locked_in)
@@ -31,8 +30,8 @@ def render_html(
     until_human = until_dt.strftime("%A, %B %-d, %Y") if hasattr(until_dt, "strftime") else until_iso
     until_short = until_dt.strftime("%B %-d, %Y") if hasattr(until_dt, "strftime") else until_iso
 
-    chart_svg = _render_chart_svg(blocks)
     callouts_html = _render_callouts(locked_in, not_locked_in)
+    chart_html = _render_chart_svg(blocks)
     rollup_html = _render_rollup(org, by_id)
     ledger_html = _render_ledger(org, by_id)
     briefs_html = "" if skip_briefs else _render_briefs(org, by_id)
@@ -53,7 +52,7 @@ def render_html(
         dek=headline_dek,
         byline=_render_byline(blocks, until_short),
         callouts=callouts_html,
-        chart=chart_svg,
+        chart=chart_html,
         rollup=rollup_html,
         ledger=ledger_html,
         briefs_section=briefs_section,
@@ -87,7 +86,7 @@ def _headline_dek(blocks: list[UserBlock], locked: list[UserBlock], not_locked: 
     def number_word(n: int) -> str:
         return ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"][n] if n < 11 else str(n)
 
-    parts = []
+    parts: list[str] = []
     if n_locked == 1:
         parts.append("One contributor is running ahead of pace this week.")
     elif n_locked > 1:
@@ -119,7 +118,7 @@ def _render_callouts(locked: list[UserBlock], not_locked: list[UserBlock]) -> st
         if not blocks:
             return '<li><em>none</em></li>'
         return "".join(
-            f'<li>{_html(b.person.github)}<em>{_html((b.person.level or "").lower())}</em></li>'
+            f'<li>{_html(b.person.github or b.person.name)}<em>{_html((b.person.level or "").lower())}</em></li>'
             for b in blocks
         )
     return f"""
@@ -133,42 +132,87 @@ def _render_callouts(locked: list[UserBlock], not_locked: list[UserBlock]) -> st
   </div>"""
 
 
+def _render_chart_svg(blocks: list[UserBlock]) -> str:
+    dots: list[str] = []
+    for b in blocks:
+        x = 80 + (b.scores.focus + 1) * 200
+        y = 360 - (b.scores.output + 1) * 150
+        is_mgr = b.person.is_manager or b.person.is_director
+        if b.scores.output > 0 and b.scores.focus > 0:
+            stroke, fill = "#1a7c36", "#1a7c36"
+            text_weight, text_fill = "600", "#121212"
+        elif b.scores.output < 0 and b.scores.focus < 0:
+            stroke, fill = "#c4192c", "#c4192c"
+            text_weight, text_fill = "600", "#121212"
+        else:
+            stroke = "#999999"
+            fill = "#666666" if (b.scores.output > 0 or b.scores.focus < 0) else "#999999"
+            text_weight, text_fill = "400", "#666666"
+        label_x = x + 9
+        label_y = y + 4
+        anchor = "start"
+        if x > 420:
+            label_x = x - 9
+            anchor = "end"
+        label = b.person.github or b.person.name
+        if is_mgr:
+            label_y = y - 13
+            anchor = "middle"
+            label_x = x
+            dots.append(
+                f'<rect x="{x-7:.1f}" y="{y-7:.1f}" width="14" height="14" '
+                f'fill="#ffffff" stroke="{stroke}" stroke-width="1.5"/>'
+                f'<rect x="{x-3.4:.1f}" y="{y-3.4:.1f}" width="6.8" height="6.8" '
+                f'fill="{fill}" filter="url(#dotShadow)"/>'
+                f'<text x="{label_x:.1f}" y="{label_y:.1f}" text-anchor="{anchor}" '
+                f'font-family="\'Helvetica Neue\', Helvetica, Arial, sans-serif" '
+                f'font-size="11.5" font-weight="{text_weight}" fill="{text_fill}">{_html(label)}</text>'
+            )
+        else:
+            dots.append(
+                f'<circle cx="{x:.1f}" cy="{y:.1f}" r="7" fill="#ffffff" stroke="{stroke}" stroke-width="1.5"/>'
+                f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3.4" fill="{fill}" filter="url(#dotShadow)"/>'
+                f'<text x="{label_x:.1f}" y="{label_y:.1f}" text-anchor="{anchor}" '
+                f'font-family="\'Helvetica Neue\', Helvetica, Arial, sans-serif" '
+                f'font-size="11.5" font-weight="{text_weight}" fill="{text_fill}">{_html(label)}</text>'
+            )
+    return _CHART_SVG_TEMPLATE.format(dots="\n      ".join(dots))
+
+
 def _render_mini_chart_svg(blocks: list[UserBlock]) -> str:
     if not blocks:
         return ""
-    dots = []
+    dots: list[str] = []
     for b in blocks:
         x = 50 + (b.scores.focus + 1) * 130
         y = 230 - (b.scores.output + 1) * 95
         is_mgr = b.person.is_manager or b.person.is_director
         if b.scores.output > 0 and b.scores.focus > 0:
             stroke, fill = "#1a7c36", "#1a7c36"
-            label_fill = "#121212"
-            label_weight = "600"
+            label_fill, label_weight = "#121212", "600"
         elif b.scores.output < 0 and b.scores.focus < 0:
             stroke, fill = "#c4192c", "#c4192c"
-            label_fill = "#121212"
-            label_weight = "600"
+            label_fill, label_weight = "#121212", "600"
         else:
             stroke, fill = "#999999", "#999999"
-            label_fill = "#666666"
-            label_weight = "400"
+            label_fill, label_weight = "#666666", "400"
         label_x = x + 7
         anchor = "start"
         if x > 250:
             label_x = x - 7
             anchor = "end"
+        label = b.person.github or b.person.name
         if is_mgr:
             dots.append(
                 f'<rect x="{x-5:.1f}" y="{y-5:.1f}" width="10" height="10" fill="#ffffff" stroke="{stroke}" stroke-width="1.2"/>'
                 f'<rect x="{x-2.4:.1f}" y="{y-2.4:.1f}" width="4.8" height="4.8" fill="{fill}"/>'
-                f'<text x="{label_x:.1f}" y="{y+3:.1f}" text-anchor="{anchor}" font-family="\'Helvetica Neue\', Helvetica, sans-serif" font-size="9.5" font-weight="{label_weight}" fill="{label_fill}">{_html(b.person.github or b.person.name)}</text>'
+                f'<text x="{label_x:.1f}" y="{y+3:.1f}" text-anchor="{anchor}" font-family="\'Helvetica Neue\', Helvetica, sans-serif" font-size="9.5" font-weight="{label_weight}" fill="{label_fill}">{_html(label)}</text>'
             )
         else:
             dots.append(
                 f'<circle cx="{x:.1f}" cy="{y:.1f}" r="5" fill="#ffffff" stroke="{stroke}" stroke-width="1.2"/>'
                 f'<circle cx="{x:.1f}" cy="{y:.1f}" r="2.4" fill="{fill}"/>'
-                f'<text x="{label_x:.1f}" y="{y+3:.1f}" text-anchor="{anchor}" font-family="\'Helvetica Neue\', Helvetica, sans-serif" font-size="9.5" font-weight="{label_weight}" fill="{label_fill}">{_html(b.person.github or b.person.name)}</text>'
+                f'<text x="{label_x:.1f}" y="{y+3:.1f}" text-anchor="{anchor}" font-family="\'Helvetica Neue\', Helvetica, sans-serif" font-size="9.5" font-weight="{label_weight}" fill="{label_fill}">{_html(label)}</text>'
             )
     return f'''<svg viewBox="0 0 360 280" width="100%" style="max-width: 360px; display: block; margin: 8px 0 12px;" xmlns="http://www.w3.org/2000/svg">
   <rect x="50" y="40" width="260" height="190" fill="#ffffff"/>
@@ -185,57 +229,8 @@ def _render_mini_chart_svg(blocks: list[UserBlock]) -> str:
 </svg>'''
 
 
-def _render_chart_svg(blocks: list[UserBlock]) -> str:
-    dots = []
-    for b in blocks:
-        x = 80 + (b.scores.focus + 1) * 200
-        y = 360 - (b.scores.output + 1) * 150
-        is_mgr = b.person.is_manager or b.person.is_director
-        if b.scores.output > 0 and b.scores.focus > 0:
-            stroke, fill = "#1a7c36", "#1a7c36"
-            text_weight = '600'
-            text_fill = '#121212'
-        elif b.scores.output < 0 and b.scores.focus < 0:
-            stroke, fill = "#c4192c", "#c4192c"
-            text_weight = '600'
-            text_fill = '#121212'
-        else:
-            stroke = "#999999"
-            fill = "#666666" if (b.scores.output > 0 or b.scores.focus < 0) else "#999999"
-            text_weight = '400'
-            text_fill = '#666666'
-        label_x = x + 9
-        label_y = y + 4
-        anchor = "start"
-        if x > 420:
-            label_x = x - 9
-            anchor = "end"
-        if is_mgr:
-            label_y = y - 13
-            anchor = "middle"
-            label_x = x
-            dots.append(
-                f'<rect x="{x-7:.1f}" y="{y-7:.1f}" width="14" height="14" '
-                f'fill="#ffffff" stroke="{stroke}" stroke-width="1.5"/>'
-                f'<rect x="{x-3.4:.1f}" y="{y-3.4:.1f}" width="6.8" height="6.8" '
-                f'fill="{fill}" filter="url(#dotShadow)"/>'
-                f'<text x="{label_x:.1f}" y="{label_y:.1f}" text-anchor="{anchor}" '
-                f'font-family="\'Helvetica Neue\', Helvetica, Arial, sans-serif" '
-                f'font-size="11.5" font-weight="{text_weight}" fill="{text_fill}">{_html(b.person.github)}</text>'
-            )
-        else:
-            dots.append(
-                f'<circle cx="{x:.1f}" cy="{y:.1f}" r="7" fill="#ffffff" stroke="{stroke}" stroke-width="1.5"/>'
-                f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3.4" fill="{fill}" filter="url(#dotShadow)"/>'
-                f'<text x="{label_x:.1f}" y="{label_y:.1f}" text-anchor="{anchor}" '
-                f'font-family="\'Helvetica Neue\', Helvetica, Arial, sans-serif" '
-                f'font-size="11.5" font-weight="{text_weight}" fill="{text_fill}">{_html(b.person.github)}</text>'
-            )
-    return _CHART_SVG_TEMPLATE.format(dots="\n      ".join(dots))
-
-
 def _render_rollup(org: Org, by_id: dict) -> str:
-    rows = []
+    rows: list[str] = []
     for leader in (*org.directors(), *org.managers()):
         reports = org.reports_of(leader.id)
         scored_reports = [by_id[p.id] for p in reports if p.id in by_id]
@@ -257,13 +252,20 @@ def _render_rollup(org: Org, by_id: dict) -> str:
     return "\n".join(rows)
 
 
+def _signed(v: float) -> str:
+    if abs(v) < 0.05:
+        return "0.0"
+    sign = "+" if v > 0 else "−"
+    return f"{sign}{abs(v):.1f}"
+
+
 def _render_ledger(org: Org, by_id: dict) -> str:
     sorted_blocks = sorted(
         (by_id[p.id] for p in org.scored_people() if p.id in by_id),
-        key=lambda b: b.scores.output + b.scores.focus * 0.1,
+        key=lambda b: b.scores.weighted_minutes,
         reverse=True,
     )
-    rows = []
+    rows: list[str] = []
     for b in sorted_blocks:
         if b.scores.output > 0 and b.scores.focus > 0:
             row_cls = "in-pos"
@@ -273,35 +275,51 @@ def _render_ledger(org: Org, by_id: dict) -> str:
             row_cls = ""
         if b.person.is_manager or b.person.is_director:
             row_cls = (row_cls + " is-mgr").strip()
-        out_cls = "pos" if b.scores.output > 0 else ("neg" if b.scores.output < 0 else "")
-        foc_cls = "pos" if b.scores.focus > 0 else ("neg" if b.scores.focus < 0 else "")
         boss = org.by_id(b.person.manager) if b.person.manager else None
         manager_label = (boss.github or boss.name) if boss else (org.vp.github or org.vp.name)
         level = (b.person.level or "—").lower()
         role = (b.person.role or "").upper()
-        work = b.scores.work_label
-        if "|" in work:
-            cat, pct = work.split("|", 1)
-            work_cell = f'{_html(cat)} <small>{_html(pct)}%</small>'
-        elif work == "Mixed":
-            work_cell = '<em>Mixed</em>'
+        top = b.scores.top_initiative
+        if top:
+            init_cell = f'{_html(top.name)} <small>{int(b.scores.top_initiative_share * 100)}%</small>'
+        elif b.scores.commit_count == 0:
+            init_cell = '<em>—</em>'
         else:
-            work_cell = '<em>—</em>'
+            init_cell = '<em>scattered</em>'
+        stack_cell = _format_stack(b.scores.work_kind_mix)
         rows.append(f"""
         <tr class="{row_cls}">
-          <td class="name">{_html(b.person.github)}</td>
+          <td class="name">{_html(b.person.github or b.person.name)}</td>
           <td class="mgr">{_html(manager_label)}</td>
           <td class="lvl">{_html(level)} <span class="role">{_html(role)}</span></td>
-          <td class="num {out_cls}">{_signed(b.scores.output)}</td>
-          <td class="num {foc_cls}">{_signed(b.scores.focus)}</td>
-          <td class="work">{work_cell}</td>
+          <td class="init">{init_cell}</td>
+          <td class="stack">{stack_cell}</td>
+          <td class="num">{b.scores.weighted_minutes:.0f}</td>
           <td class="num">{b.scores.commit_count}</td>
         </tr>""")
     return "\n".join(rows)
 
 
+def _format_stack(mix: dict[str, float]) -> str:
+    if not mix:
+        return '<em>—</em>'
+    items = list(mix.items())[:3]
+    pretty = {
+        "code": "code",
+        "data_pipeline": "data",
+        "test": "tests",
+        "infra": "infra",
+        "config": "config",
+        "docs": "docs",
+        "lockfile": "deps",
+        "other": "other",
+    }
+    parts = [f'{pretty.get(k, k)} <small>{int(v * 100)}%</small>' for k, v in items if v >= 0.05]
+    return " · ".join(parts) if parts else '<em>—</em>'
+
+
 def _render_briefs(org: Org, by_id: dict) -> str:
-    articles = []
+    articles: list[str] = []
 
     vp_direct = [p for p in org.reports_of(org.vp.id)
                  if not p.is_director and not p.is_manager]
@@ -335,7 +353,7 @@ def _render_leader_brief(org: Org, leader: Person, by_id: dict, scope: str) -> s
     if not leader_block and not direct_reports:
         return ""
 
-    cards = []
+    cards: list[str] = []
     if leader_block:
         cards.append(_card(leader_block, lead=True))
     else:
@@ -351,7 +369,7 @@ def _render_leader_brief(org: Org, leader: Person, by_id: dict, scope: str) -> s
     if not role_label:
         role_label = "—"
 
-    team_blocks = []
+    team_blocks: list[UserBlock] = []
     if leader_block:
         team_blocks.append(leader_block)
     team_blocks.extend(by_id[p.id] for p in direct_reports if p.id in by_id)
@@ -367,8 +385,8 @@ def _render_leader_brief(org: Org, leader: Person, by_id: dict, scope: str) -> s
 
 
 def _render_vp_direct_brief(org: Org, direct_reports: list[Person], by_id: dict) -> str:
-    cards = []
-    blocks_for_chart = []
+    cards: list[str] = []
+    blocks_for_chart: list[UserBlock] = []
     for p in direct_reports:
         block = by_id.get(p.id)
         if block:
@@ -464,14 +482,7 @@ def _meta_chip(b: UserBlock) -> str:
     role = (b.person.role or "").upper()
     if b.scores.commit_count == 0:
         return _html(f"{level} {role} · no commits")
-    return _html(f"{level} {role} · {b.scores.commit_count} commits")
-
-
-def _signed(v: float) -> str:
-    if abs(v) < 0.05:
-        return "0.0"
-    sign = "+" if v > 0 else "−"
-    return f"{sign}{abs(v):.1f}"
+    return _html(f"{level} {role} · {b.scores.commit_count} commits · {b.scores.weighted_minutes:.0f} min")
 
 
 def _html(s: str) -> str:
@@ -484,19 +495,24 @@ def _about_text() -> str:
         "Code review, design, mentorship, debugging, exploratory analysis in notebooks, "
         "and dashboards built in BI tools are invisible here — a bias largest for senior "
         "ICs and for Data Scientists, ML Engineers, and Data Analysts. Managers and "
-        "directors are scored as contributors alongside ICs whenever they ship code; only "
-        "the audience leader (the VP) is exempt. Output is the log-ratio of "
-        "complexity-weighted commit minutes to a fixed 600 minute / week reference. "
-        "Volume drives placement; levels and roles do not enter the formula. The neutral "
-        "midline (output 0) sits at 600 weighted minutes per week — about ten hours of "
-        "commit-visible work, complexity-weighted. Above that, you climb toward the "
-        "locked-in zone; below, toward not locked in. Levels and roles still appear on "
-        "each contributor's card and in the ledger as human context, but they do not "
-        "shift the chart. Each commit is categorized by message prefix and file paths "
-        "into Features, Bug fixes, Refactor, Infrastructure, Tests, or Documentation, "
-        "falling back to the top-touched directory when no category dominates. Manager "
-        "rollups are the median of each manager's direct reports — the manager's own "
-        "score appears separately in the ledger."
+        "directors are scored as contributors alongside ICs whenever they ship code; "
+        "only the audience leader (the VP) is exempt. The horizontal axis is "
+        "<em>focus</em> — Herfindahl concentration over <em>initiatives</em>, not "
+        "repos. Two commits join the same initiative when they happen within 48 "
+        "hours of each other and share a conventional-commit scope, a meaningful "
+        "message token, or a top-level directory; so a 4-repo shipped change for "
+        "one feature collapses into one initiative and lands at +1 focus, not "
+        "scattered across the chart. The vertical axis is <em>output</em> — log-ratio "
+        "of weighted commit minutes to a fixed 600 minute / week reference. "
+        "Per-commit effort is heuristic-base × complexity multiplier × file-kind "
+        "weight: code, SQL/Airflow/dbt, tests, and infrastructure count at full "
+        "weight; generic configuration at 60%; documentation at 20%; lockfile-only "
+        "commits at 10%. A week of pure README edits will not register as locked "
+        "in. Levels and roles still appear on each card and in the ledger as "
+        "context but do not enter the score formula. Each commit is also "
+        "categorized into a stack mix (code, data, tests, infra, config, docs, "
+        "deps); the dominant initiative and stack appear in the per-contributor "
+        "ledger. Manager rollups are the median of each manager's direct reports."
     )
 
 
@@ -533,13 +549,13 @@ _CHART_SVG_TEMPLATE = """<svg class="chart-svg" viewBox="0 0 540 460" xmlns="htt
     <line x1="76" y1="360" x2="80" y2="360"/>
   </g>
   <text x="280" y="408" text-anchor="middle" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="10" font-weight="700" letter-spacing="0.24em" fill="#121212">FOCUS</text>
-  <text x="280" y="423" text-anchor="middle" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="10" fill="#666666">churn concentration across repos</text>
+  <text x="280" y="423" text-anchor="middle" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="10" fill="#666666">concentration across initiatives</text>
   <text x="80"  y="378" text-anchor="middle" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="700" fill="#121212">−1</text>
-  <text x="80"  y="392" text-anchor="middle" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="9.5" fill="#666666">10+ repos</text>
+  <text x="80"  y="392" text-anchor="middle" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="9.5" fill="#666666">scattered</text>
   <text x="280" y="378" text-anchor="middle" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="600" fill="#666666">0</text>
   <text x="280" y="392" text-anchor="middle" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="9.5" fill="#666666">two equal</text>
   <text x="480" y="378" text-anchor="middle" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="700" fill="#121212">+1</text>
-  <text x="480" y="392" text-anchor="middle" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="9.5" fill="#666666">one repo</text>
+  <text x="480" y="392" text-anchor="middle" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="9.5" fill="#666666">one initiative</text>
   <g stroke="#121212" stroke-width="1">
     <line x1="80"  y1="360" x2="80"  y2="364"/>
     <line x1="280" y1="360" x2="280" y2="364"/>
@@ -555,12 +571,13 @@ html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; 
   --paper: #ffffff; --paper-deep: #f7f7f7; --ink: #121212; --body: #2b2b2b; --mute: #666666;
   --rule: #e2e2e2; --rule-strong: #999999;
   --pos: #1a7c36; --pos-fill: #e6f1ea; --neg: #c4192c; --neg-fill: #fbeaec; --kicker: #c4192c;
+  --bar-base: #d8d8d8; --bar-top: #121212;
   --blackletter: "UnifrakturCook", "Engravers MT", "Old English Text MT", serif;
   --serif: "Source Serif Pro", "Source Serif 4", "Hoefler Text", "Iowan Old Style", "Times New Roman", Georgia, serif;
   --sans: "Helvetica Neue", Helvetica, "Arial Nova", Arial, sans-serif;
 }
 body { margin: 0; background: var(--paper); color: var(--body); font: 14px/1.55 var(--sans); }
-main { max-width: 720px; margin: 0 auto; padding: 32px 36px 80px; position: relative; }
+main { max-width: 760px; margin: 0 auto; padding: 32px 36px 80px; position: relative; }
 .nameplate { text-align: center; padding: 14px 0 16px; border-top: 1px solid var(--ink); border-bottom: 1px solid var(--ink); position: relative; margin-bottom: 22px; }
 .nameplate::before { content: ""; position: absolute; top: -5px; left: 0; right: 0; border-top: 1px solid var(--ink); }
 .nameplate-name { font-family: var(--blackletter); font-weight: 700; font-size: 78px; line-height: 0.95; letter-spacing: 0.005em; color: var(--ink); margin: 0; padding: 4px 0 2px; }
@@ -592,17 +609,17 @@ main { max-width: 720px; margin: 0 auto; padding: 32px 36px 80px; position: rela
 .callout-names li { display: inline; }
 .callout-names li:not(:last-child)::after { content: " · "; color: var(--rule-strong); margin: 0 1px; font-weight: 400; }
 .callout-names em { font-family: var(--sans); font-style: normal; font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--mute); margin-left: 4px; vertical-align: 1px; font-weight: 600; }
+.sec { margin: 40px 0 0; }
+.sec-head { display: flex; justify-content: space-between; align-items: center; font-size: 10.5px; font-weight: 700; letter-spacing: 0.24em; text-transform: uppercase; color: var(--ink); margin: 0 0 14px; padding-bottom: 8px; border-bottom: 1.5px solid var(--ink); font-family: var(--sans); }
+.sec-head-l { display: inline-flex; align-items: center; gap: 11px; }
+.sec-mark { width: 9px; height: 9px; background: var(--ink); display: inline-block; flex: 0 0 9px; }
+.sec-head em { font-style: italic; font-weight: 400; letter-spacing: 0.04em; text-transform: none; color: var(--mute); font-family: var(--serif); font-size: 13px; }
 .chart { margin: 0 0 36px; }
 .chart-svg { display: block; width: 100%; height: auto; }
 .chart-cap { margin: 14px 0 0; padding: 12px 4px 0; border-top: 1px solid var(--rule); }
 .chart-cap p { font-family: var(--serif); font-style: italic; font-size: 13px; line-height: 1.6; color: var(--mute); margin: 0 0 8px; }
 .chart-cap p:last-child { margin-bottom: 0; }
 .chart-cap b { font-style: normal; font-family: var(--sans); font-weight: 700; font-size: 9.5px; letter-spacing: 0.20em; text-transform: uppercase; color: var(--ink); margin-right: 8px; padding-right: 9px; border-right: 1px solid var(--rule-strong); }
-.sec { margin: 40px 0 0; }
-.sec-head { display: flex; justify-content: space-between; align-items: center; font-size: 10.5px; font-weight: 700; letter-spacing: 0.24em; text-transform: uppercase; color: var(--ink); margin: 0 0 14px; padding-bottom: 8px; border-bottom: 1.5px solid var(--ink); font-family: var(--sans); }
-.sec-head-l { display: inline-flex; align-items: center; gap: 11px; }
-.sec-mark { width: 9px; height: 9px; background: var(--ink); display: inline-block; flex: 0 0 9px; }
-.sec-head em { font-style: italic; font-weight: 400; letter-spacing: 0.04em; text-transform: none; color: var(--mute); font-family: var(--serif); font-size: 13px; }
 .rollup-row { display: grid; grid-template-columns: 1fr auto auto; gap: 24px; align-items: baseline; padding: 13px 4px; border-bottom: 1px solid var(--rule); }
 .rollup-row:last-child { border-bottom: 1px solid var(--rule-strong); }
 .rollup-mgr { font-family: var(--serif); font-size: 17px; color: var(--ink); font-weight: 600; }
@@ -610,6 +627,7 @@ main { max-width: 720px; margin: 0 auto; padding: 32px 36px 80px; position: rela
 .rollup-stat { display: flex; align-items: baseline; gap: 10px; min-width: 130px; justify-content: flex-end; }
 .rollup-stat-key { font-size: 9.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--mute); font-weight: 600; font-family: var(--sans); }
 .rollup-stat-val { font-family: var(--sans); font-variant-numeric: tabular-nums; font-size: 15px; color: var(--ink); font-weight: 700; min-width: 44px; text-align: right; }
+.rollup-stat-val small { font-family: var(--sans); font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--mute); font-weight: 600; margin-left: 3px; }
 table { width: 100%; border-collapse: collapse; font-family: var(--sans); }
 thead th { text-align: left; font-size: 9.5px; font-weight: 700; letter-spacing: 0.20em; text-transform: uppercase; color: var(--mute); padding: 10px 8px 8px; border-bottom: 1px solid var(--rule-strong); }
 thead th.num { text-align: right; }
@@ -626,9 +644,12 @@ tr.is-mgr td.name::after { content: " mgr"; font-family: var(--sans); font-size:
 td.lvl { font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--mute); font-weight: 600; white-space: nowrap; }
 td.lvl .role { font-weight: 700; color: var(--ink); margin-left: 4px; letter-spacing: 0.18em; }
 td.mgr { font-size: 13px; color: var(--mute); }
-td.work { font-size: 9.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink); font-weight: 700; white-space: nowrap; }
-td.work small { font-family: var(--sans); font-variant-numeric: tabular-nums; font-size: 11px; letter-spacing: 0; text-transform: none; color: var(--mute); font-weight: 500; margin-left: 8px; }
-td.work em { font-family: var(--serif); font-style: italic; letter-spacing: 0; text-transform: none; color: var(--mute); font-size: 14px; font-weight: 400; }
+td.init { font-family: var(--serif); font-size: 13.5px; color: var(--ink); font-weight: 600; }
+td.init small { font-family: var(--sans); font-variant-numeric: tabular-nums; font-size: 10.5px; letter-spacing: 0.04em; color: var(--mute); margin-left: 6px; font-weight: 500; }
+td.init em { font-family: var(--serif); font-style: italic; color: var(--mute); font-weight: 400; }
+td.stack { font-size: 10px; letter-spacing: 0.10em; text-transform: lowercase; color: var(--mute); font-weight: 600; }
+td.stack small { font-family: var(--sans); font-variant-numeric: tabular-nums; font-size: 9px; letter-spacing: 0; color: var(--mute); margin-left: 3px; font-weight: 500; }
+td.stack em { font-family: var(--serif); font-style: italic; color: var(--mute); font-weight: 400; text-transform: none; letter-spacing: 0; }
 .pos { color: var(--pos); font-weight: 700; }
 .neg { color: var(--neg); font-weight: 700; }
 .briefs { margin-top: 64px; }
@@ -657,6 +678,7 @@ td.work em { font-family: var(--serif); font-style: italic; letter-spacing: 0; t
 .colophon-head { display: flex; align-items: center; gap: 11px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.24em; text-transform: uppercase; color: var(--ink); margin: 0 0 16px; font-family: var(--sans); }
 .colophon-body { font-family: var(--serif); font-size: 14.5px; line-height: 1.65; color: var(--body); margin: 0 0 14px; }
 .colophon-body::after { content: " ■"; color: var(--ink); margin-left: 4px; font-size: 11px; vertical-align: 1px; }
+.colophon-body em { font-style: italic; }
 .dropcap { font-family: var(--serif); float: left; font-size: 52px; font-weight: 700; line-height: 0.86; margin: 4px 8px -2px 0; color: var(--ink); }
 .colophon-warn { font-family: var(--serif); font-style: italic; font-size: 13px; color: var(--neg); margin: 0; padding: 8px 0 0 14px; border-left: 2px solid var(--neg); }
 @media print { body { background: white; color: var(--ink); } main { padding: 24px; max-width: 100%; } .callouts { break-inside: avoid; } .chart { break-inside: avoid; } }
@@ -672,6 +694,7 @@ td.work em { font-family: var(--serif); font-style: italic; letter-spacing: 0; t
   .rollup-stat { justify-content: flex-start; }
   thead th, tbody td { padding: 8px 5px; }
   td.mgr { font-size: 12px; }
+  td.stack { display: none; }
   .callout-names { font-size: 16px; }
   .dropcap { font-size: 42px; }
 }"""
@@ -714,7 +737,7 @@ _PAGE = """<!DOCTYPE html>
   <figure class="chart">
     {chart}
     <figcaption class="chart-cap">
-      <p><b>Note</b>Output is the log-ratio of complexity-weighted commit minutes to a fixed 600 minute / week reference. Levels and roles do not affect the chart — only what was committed and how complex it was. Above the midline you climb toward locked in; below, toward not locked in. Focus is a 60/40 blend of average-commit depth and repo concentration. Each shape is one contributor; circles denote ICs and squares denote managers.</p>
+      <p><b>Note</b>Output is the log-ratio of complexity-weighted, file-kind-weighted commit minutes to a 600 minute / week reference. Focus is the Herfindahl concentration of weighted effort across <em>initiative clusters</em> (commits sharing a scope, token, or top-level directory within 48 hours), so a single coherent change that spans multiple repos lands at +1 focus, not scattered.</p>
     </figcaption>
   </figure>
 
@@ -726,7 +749,7 @@ _PAGE = """<!DOCTYPE html>
   <section class="sec">
     <h2 class="sec-head"><span class="sec-head-l"><span class="sec-mark" aria-hidden="true"></span>Per-contributor ledger</span></h2>
     <table>
-      <thead><tr><th>Contributor</th><th>Manager</th><th>Role</th><th class="num">Output</th><th class="num">Focus</th><th>Mostly</th><th class="num">Commits</th></tr></thead>
+      <thead><tr><th>Contributor</th><th>Manager</th><th>Role</th><th>Top initiative</th><th>Stack</th><th class="num">Minutes</th><th class="num">Commits</th></tr></thead>
       <tbody>{ledger}</tbody>
     </table>
   </section>

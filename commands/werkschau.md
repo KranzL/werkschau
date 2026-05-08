@@ -291,6 +291,22 @@ Cap each commit's `patch` at ~1500 chars. Keep up to 8 files per commit.
 
 Skip diff-fetching entirely for users with `commit_count == 0`.
 
+## Step 7b: Cluster each user's commits into initiatives
+
+Before writing briefs, mentally group each user's commits into 1-4 **initiatives**. The bullet structure of each brief should mirror those clusters.
+
+Use this heuristic: **two commits belong to the same initiative when they happen within 48 hours of each other AND share at least one of**:
+
+1. A conventional-commit scope (`feat(alfredo):` matches `fix(alfredo):` — same scope `alfredo`).
+2. A meaningful message token (length ≥4, lowercase, ignoring boilerplate like `feat`, `fix`, `chore`, `update`, `bump`, `change`, `cleanup`, `wip`, etc.).
+3. A shared top-2-level directory in the file paths (`src/alfredo/...` matches `src/alfredo/config.py` even across repos).
+
+A coherent change that spans multiple repos (e.g. main code in `src/`, k8s YAML in `deploy/`, terraform in `infra/`, docs in `docs/`) is **one initiative**, not four. The chart's focus axis treats it as +1 focus, and your bullets should match.
+
+A run of small unrelated commits with no shared signal is multiple singleton initiatives. Don't try to invent a unifying narrative — write one bullet per real cluster, plus a `**Maintenance**` bullet for noise if there's a lot of it.
+
+Trust the diffs over the heuristic when the diffs make a more specific cluster name obvious.
+
 ## Step 8: Write per-person briefs
 
 For each scored person (every non-VP — directors, managers, ICs, all of them), write a SHORT, scannable brief grounded in their commits + sampled diffs and the person's `description` from `org.json`.
