@@ -23,7 +23,8 @@ def render_html(
     issue_number: int = 1,
     skip_briefs: bool = False,
 ) -> str:
-    by_handle = {b.person.github: b for b in blocks}
+    by_handle = {b.person.github: b for b in blocks if b.person.github}
+    by_id = {b.person.id: b for b in blocks}
     locked_in, not_locked_in = _classify_callouts(blocks)
     headline_dek = _headline_dek(blocks, locked_in, not_locked_in)
     until_dt = datetime.fromisoformat(until_iso.replace("Z", "+00:00"))
@@ -32,9 +33,9 @@ def render_html(
 
     chart_svg = _render_chart_svg(blocks)
     callouts_html = _render_callouts(locked_in, not_locked_in)
-    rollup_html = _render_rollup(org, by_handle)
-    ledger_html = _render_ledger(org, by_handle)
-    briefs_html = "" if skip_briefs else _render_briefs(org, by_handle)
+    rollup_html = _render_rollup(org, by_id)
+    ledger_html = _render_ledger(org, by_id)
+    briefs_html = "" if skip_briefs else _render_briefs(org, by_id)
     briefs_section = "" if not briefs_html.strip() else f'''
   <section class="briefs">
     <div class="briefs-head">
@@ -132,6 +133,58 @@ def _render_callouts(locked: list[UserBlock], not_locked: list[UserBlock]) -> st
   </div>"""
 
 
+def _render_mini_chart_svg(blocks: list[UserBlock]) -> str:
+    if not blocks:
+        return ""
+    dots = []
+    for b in blocks:
+        x = 50 + (b.scores.focus + 1) * 130
+        y = 230 - (b.scores.output + 1) * 95
+        is_mgr = b.person.is_manager or b.person.is_director
+        if b.scores.output > 0 and b.scores.focus > 0:
+            stroke, fill = "#1a7c36", "#1a7c36"
+            label_fill = "#121212"
+            label_weight = "600"
+        elif b.scores.output < 0 and b.scores.focus < 0:
+            stroke, fill = "#c4192c", "#c4192c"
+            label_fill = "#121212"
+            label_weight = "600"
+        else:
+            stroke, fill = "#999999", "#999999"
+            label_fill = "#666666"
+            label_weight = "400"
+        label_x = x + 7
+        anchor = "start"
+        if x > 250:
+            label_x = x - 7
+            anchor = "end"
+        if is_mgr:
+            dots.append(
+                f'<rect x="{x-5:.1f}" y="{y-5:.1f}" width="10" height="10" fill="#ffffff" stroke="{stroke}" stroke-width="1.2"/>'
+                f'<rect x="{x-2.4:.1f}" y="{y-2.4:.1f}" width="4.8" height="4.8" fill="{fill}"/>'
+                f'<text x="{label_x:.1f}" y="{y+3:.1f}" text-anchor="{anchor}" font-family="\'Helvetica Neue\', Helvetica, sans-serif" font-size="9.5" font-weight="{label_weight}" fill="{label_fill}">{_html(b.person.github or b.person.name)}</text>'
+            )
+        else:
+            dots.append(
+                f'<circle cx="{x:.1f}" cy="{y:.1f}" r="5" fill="#ffffff" stroke="{stroke}" stroke-width="1.2"/>'
+                f'<circle cx="{x:.1f}" cy="{y:.1f}" r="2.4" fill="{fill}"/>'
+                f'<text x="{label_x:.1f}" y="{y+3:.1f}" text-anchor="{anchor}" font-family="\'Helvetica Neue\', Helvetica, sans-serif" font-size="9.5" font-weight="{label_weight}" fill="{label_fill}">{_html(b.person.github or b.person.name)}</text>'
+            )
+    return f'''<svg viewBox="0 0 360 280" width="100%" style="max-width: 360px; display: block; margin: 8px 0 12px;" xmlns="http://www.w3.org/2000/svg">
+  <rect x="50" y="40" width="260" height="190" fill="#ffffff"/>
+  <rect x="180" y="40" width="130" height="95" fill="#1a7c36" fill-opacity="0.07"/>
+  <rect x="50" y="135" width="130" height="95" fill="#c4192c" fill-opacity="0.06"/>
+  <line x1="180" y1="40" x2="180" y2="230" stroke="#999999" stroke-width="0.6" stroke-dasharray="2 3"/>
+  <line x1="50" y1="135" x2="310" y2="135" stroke="#999999" stroke-width="0.6" stroke-dasharray="2 3"/>
+  <rect x="50" y="40" width="260" height="190" fill="none" stroke="#121212" stroke-width="0.85"/>
+  <text x="305" y="55" text-anchor="end" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="9" fill="#1a7c36">locked in</text>
+  <text x="55" y="225" text-anchor="start" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="9" fill="#c4192c">not locked in</text>
+  <text x="180" y="252" text-anchor="middle" font-family="'Helvetica Neue', Helvetica, sans-serif" font-size="8" font-weight="700" letter-spacing="0.18em" fill="#666666">FOCUS</text>
+  <g transform="translate(20, 135) rotate(-90)"><text text-anchor="middle" font-family="'Helvetica Neue', Helvetica, sans-serif" font-size="8" font-weight="700" letter-spacing="0.18em" fill="#666666">OUTPUT</text></g>
+  {chr(10).join(dots)}
+</svg>'''
+
+
 def _render_chart_svg(blocks: list[UserBlock]) -> str:
     dots = []
     for b in blocks:
@@ -181,34 +234,32 @@ def _render_chart_svg(blocks: list[UserBlock]) -> str:
     return _CHART_SVG_TEMPLATE.format(dots="\n      ".join(dots))
 
 
-def _render_rollup(org: Org, by_handle: dict) -> str:
+def _render_rollup(org: Org, by_id: dict) -> str:
     rows = []
-    for mgr in (*org.directors(), *org.managers()):
-        if not mgr.github:
+    for leader in (*org.directors(), *org.managers()):
+        reports = org.reports_of(leader.id)
+        scored_reports = [by_id[p.id] for p in reports if p.id in by_id]
+        if not scored_reports:
             continue
-        reports = org.reports_of(mgr.github)
-        if not reports:
-            continue
-        outs = [by_handle[p.github].scores.output for p in reports if p.github and p.github in by_handle]
-        focs = [by_handle[p.github].scores.focus for p in reports if p.github and p.github in by_handle]
-        if not outs:
-            continue
+        outs = [b.scores.output for b in scored_reports]
+        focs = [b.scores.focus for b in scored_reports]
         out_med = median(outs)
         foc_med = median(focs)
         out_cls = "pos" if out_med > 0 else ("neg" if out_med < 0 else "")
         foc_cls = "pos" if foc_med > 0 else ("neg" if foc_med < 0 else "")
+        label = leader.github or leader.name
         rows.append(f"""
     <div class="rollup-row">
-      <span class="rollup-mgr">{_html(mgr.github)} <small>{len(reports)} reports</small></span>
+      <span class="rollup-mgr">{_html(label)} <small>{len(reports)} reports</small></span>
       <span class="rollup-stat"><span class="rollup-stat-key">Output</span><span class="rollup-stat-val {out_cls}">{_signed(out_med)}</span></span>
       <span class="rollup-stat"><span class="rollup-stat-key">Focus</span><span class="rollup-stat-val {foc_cls}">{_signed(foc_med)}</span></span>
     </div>""")
     return "\n".join(rows)
 
 
-def _render_ledger(org: Org, by_handle: dict) -> str:
+def _render_ledger(org: Org, by_id: dict) -> str:
     sorted_blocks = sorted(
-        (by_handle[p.github] for p in org.scored_people() if p.github in by_handle),
+        (by_id[p.id] for p in org.scored_people() if p.id in by_id),
         key=lambda b: b.scores.output + b.scores.focus * 0.1,
         reverse=True,
     )
@@ -224,7 +275,8 @@ def _render_ledger(org: Org, by_handle: dict) -> str:
             row_cls = (row_cls + " is-mgr").strip()
         out_cls = "pos" if b.scores.output > 0 else ("neg" if b.scores.output < 0 else "")
         foc_cls = "pos" if b.scores.focus > 0 else ("neg" if b.scores.focus < 0 else "")
-        manager_label = b.person.manager or org.vp.github
+        boss = org.by_id(b.person.manager) if b.person.manager else None
+        manager_label = (boss.github or boss.name) if boss else (org.vp.github or org.vp.name)
         level = (b.person.level or "—").lower()
         role = (b.person.role or "").upper()
         work = b.scores.work_label
@@ -248,20 +300,19 @@ def _render_ledger(org: Org, by_handle: dict) -> str:
     return "\n".join(rows)
 
 
-def _render_briefs(org: Org, by_handle: dict) -> str:
+def _render_briefs(org: Org, by_id: dict) -> str:
     articles = []
 
-    vp_direct = [p for p in org.people
-                 if not p.is_director and not p.is_manager
-                 and not p.manager and not p.director]
+    vp_direct = [p for p in org.reports_of(org.vp.id)
+                 if not p.is_director and not p.is_manager]
     if vp_direct:
-        articles.append(_render_vp_direct_brief(org, vp_direct, by_handle))
+        articles.append(_render_vp_direct_brief(org, vp_direct, by_id))
 
     for director in org.directors():
-        articles.append(_render_leader_brief(org, director, by_handle, scope="director"))
+        articles.append(_render_leader_brief(org, director, by_id, scope="director"))
 
     for manager in org.managers():
-        articles.append(_render_leader_brief(org, manager, by_handle, scope="manager"))
+        articles.append(_render_leader_brief(org, manager, by_id, scope="manager"))
 
     articles = [a for a in articles if a.strip()]
     if not articles:
@@ -269,31 +320,28 @@ def _render_briefs(org: Org, by_handle: dict) -> str:
     return "\n".join(articles)
 
 
-def _render_leader_brief(org: Org, leader: Person, by_handle: dict, scope: str) -> str:
+def _render_leader_brief(org: Org, leader: Person, by_id: dict, scope: str) -> str:
+    direct_reports = [p for p in org.reports_of(leader.id)
+                      if not p.is_manager and not p.is_director]
     if scope == "manager":
-        direct_reports = [p for p in org.reports_of(leader.github)
-                          if not p.is_manager and not p.is_director and p.github != leader.github]
         team_label = f"{_html(leader.name)}'s team"
-        boss_label = leader.director or (org.vp.github or org.vp.name)
     else:
-        direct_reports = [p for p in org.people
-                          if p.director == leader.github
-                          and not p.is_manager and not p.is_director
-                          and not p.manager]
         team_label = f"{_html(leader.name)}'s direct reports"
-        boss_label = org.vp.github or org.vp.name
 
-    leader_block = by_handle.get(leader.github) if leader.github else None
+    boss = org.by_id(leader.manager) if leader.manager else None
+    boss_label = (boss.github or boss.name) if boss else (org.vp.github or org.vp.name)
+
+    leader_block = by_id.get(leader.id)
     if not leader_block and not direct_reports:
         return ""
 
     cards = []
     if leader_block:
         cards.append(_card(leader_block, lead=True))
-    elif scope in ("director", "manager"):
+    else:
         cards.append(_offgrid_card(leader, lead=True))
     for p in direct_reports:
-        block = by_handle.get(p.github) if p.github else None
+        block = by_id.get(p.id)
         if block:
             cards.append(_card(block, lead=False))
         else:
@@ -302,27 +350,38 @@ def _render_leader_brief(org: Org, leader: Person, by_handle: dict, scope: str) 
     role_label = f"{(leader.level or '').upper()} {(leader.role or '').upper()}".strip()
     if not role_label:
         role_label = "—"
-    report_count = len([p for p in (org.reports_of(leader.github) if leader.github else []) if p.github != leader.github])
+
+    team_blocks = []
+    if leader_block:
+        team_blocks.append(leader_block)
+    team_blocks.extend(by_id[p.id] for p in direct_reports if p.id in by_id)
+    chart_html = _render_mini_chart_svg(team_blocks) if team_blocks else ""
+
     return f"""
     <article class="brief">
       <h2 class="brief-name">{team_label}</h2>
-      <p class="brief-meta">{_html(role_label)} · {report_count} reports · reports to {_html(boss_label or '—')}</p>
+      <p class="brief-meta">{_html(role_label)} · {len(direct_reports)} reports · reports to {_html(boss_label or '—')}</p>
+      {chart_html}
       {''.join(cards)}
     </article>"""
 
 
-def _render_vp_direct_brief(org: Org, direct_reports: list[Person], by_handle: dict) -> str:
+def _render_vp_direct_brief(org: Org, direct_reports: list[Person], by_id: dict) -> str:
     cards = []
+    blocks_for_chart = []
     for p in direct_reports:
-        block = by_handle.get(p.github) if p.github else None
+        block = by_id.get(p.id)
         if block:
             cards.append(_card(block, lead=False))
+            blocks_for_chart.append(block)
         else:
             cards.append(_offgrid_card(p, lead=False))
+    chart_html = _render_mini_chart_svg(blocks_for_chart) if blocks_for_chart else ""
     return f"""
     <article class="brief">
       <h2 class="brief-name">Reports to {_html(org.vp.name)}</h2>
       <p class="brief-meta">VP-direct contributors · {len(direct_reports)} reports</p>
+      {chart_html}
       {''.join(cards)}
     </article>"""
 

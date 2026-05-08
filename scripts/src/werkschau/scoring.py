@@ -79,38 +79,79 @@ def _complexity_weighted_effort(commit: dict) -> float:
 
 
 def _focus_score(commits: list[dict]) -> float:
-    if not commits:
+    if len(commits) < 3:
         return 0.0
-    churn_per_repo: dict[str, float] = defaultdict(float)
+    effort_per_repo: dict[str, float] = defaultdict(float)
     for c in commits:
         repo = c.get("repo") or ""
         if not repo:
             continue
-        churn_per_repo[repo] += float(c.get("churn") or 0)
-    total = sum(churn_per_repo.values())
+        effort_per_repo[repo] += _complexity_weighted_effort(c)
+    total = sum(effort_per_repo.values())
     if total <= 0:
         return 0.0
-    h = sum((v / total) ** 2 for v in churn_per_repo.values())
-    return _clip(2.0 * h - 1.0, -1.0, 1.0)
+    h = sum((v / total) ** 2 for v in effort_per_repo.values())
+    repo_score = _clip(2.0 * h - 1.0, -1.0, 1.0)
+
+    avg_commit_effort = total / len(commits)
+    depth_score = _clip(math.log2(max(avg_commit_effort, 1.0) / 30.0), -1.0, 1.0)
+
+    return _clip(0.4 * repo_score + 0.6 * depth_score, -1.0, 1.0)
 
 
 def _dominant_work_label(commits: list[dict]) -> str:
     if not commits:
         return "—"
     weighted_by_cat: dict[str, float] = defaultdict(float)
+    weighted_by_area: dict[str, float] = defaultdict(float)
     total = 0.0
     for c in commits:
         cat = classify_commit(c)
+        area = _top_area(c)
         w = _complexity_weighted_effort(c)
         weighted_by_cat[cat] += w
+        if area:
+            weighted_by_area[area] += w
         total += w
     if total <= 0:
         return "—"
-    top_cat, top_w = max(weighted_by_cat.items(), key=lambda kv: kv[1])
-    pct = top_w / total
-    if pct < 0.5:
-        return "Mixed"
-    return f"{top_cat}|{round(pct * 100)}"
+
+    if weighted_by_cat:
+        top_cat, top_w = max(weighted_by_cat.items(), key=lambda kv: kv[1])
+        cat_pct = top_w / total
+    else:
+        top_cat, cat_pct = "", 0.0
+
+    if top_cat in ("Bug fixes", "Refactor", "Infrastructure", "Tests", "Documentation") and cat_pct >= 0.5:
+        return f"{top_cat}|{round(cat_pct * 100)}"
+
+    if weighted_by_area:
+        top_area, area_w = max(weighted_by_area.items(), key=lambda kv: kv[1])
+        area_pct = area_w / total
+        if area_pct >= 0.4:
+            return f"{top_area}|{round(area_pct * 100)}"
+
+    return "Mixed"
+
+
+def _top_area(commit: dict) -> str | None:
+    repo = commit.get("repo") or ""
+    files = commit.get("file_paths_sample") or []
+    if not files:
+        return repo.split("/", 1)[1] if "/" in repo else repo or None
+    dirs = []
+    for f in files:
+        parts = f.split("/")
+        if len(parts) >= 3:
+            dirs.append(parts[1])
+        elif len(parts) == 2:
+            dirs.append(parts[0])
+    if not dirs:
+        return repo.split("/", 1)[1] if "/" in repo else repo or None
+    counts: dict[str, int] = defaultdict(int)
+    for d in dirs:
+        counts[d] += 1
+    return max(counts.items(), key=lambda kv: kv[1])[0]
 
 
 def classify_commit(commit: dict) -> str:
