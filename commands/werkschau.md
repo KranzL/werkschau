@@ -92,13 +92,13 @@ Pick the first that applies:
 
    Ask conversationally: *"List the directors reporting to `<VP>`. One per line in `handle:Full Name` format (or just `Full Name` if no GitHub). Type `none` if there are no directors."*
 
-   For **each** parsed director **with a GitHub handle**, ask level and role via **AskUserQuestion** (one call with two questions). Use the **director-track level** options here, since hierarchical directors map to Principal-equivalent levels:
+   For **each** parsed director **with a GitHub handle**, ask level and role via **AskUserQuestion** (one call with two questions). Use the **director-track level** options:
 
    - Question 1 — header `"Level"`, question `"Level for <Full Name> (<handle>)?"`. Options:
-     - `"Director"` — desc: "Principal-equivalent management track"
-     - `"Senior Director"` — desc: "Senior Principal-equivalent management track"
-     - `"Principal"` — desc: "Principal IC track (some directors keep IC titles)"
-     - `"Distinguished"` — desc: "Distinguished engineer-level"
+     - `"L7"` — desc: "Director (Principal-equivalent)"
+     - `"L8"` — desc: "Senior Director (Senior Principal-equivalent)"
+     - `"L7 IC"` — desc: "Principal IC track"
+     - `"L9"` — desc: "Distinguished"
    - Question 2 — header `"Role"`, question `"Role for <Full Name> (<handle>)?"`. Options:
      - `"SWE"` — desc: "Software Engineer"
      - `"AE"` — desc: "Analytics Engineer"
@@ -128,10 +128,10 @@ Pick the first that applies:
    For **each** manager **with a GitHub handle**, ask level and role via AskUserQuestion. Use the **manager-track level** options:
 
    - Question 1 — header `"Level"`, question `"Level for <Full Name> (<handle>)?"`. Options:
-     - `"Manager"` — desc: "Staff-equivalent. Frontline EM"
-     - `"Senior Manager"` — desc: "Senior Staff-equivalent. Multi-team EM"
-     - `"Staff"` — desc: "Staff IC track (some managers keep IC titles)"
-     - `"Senior Staff"` — desc: "Senior Staff IC track"
+     - `"L5"` — desc: "Manager (Staff-equivalent)"
+     - `"L6"` — desc: "Senior Manager (Senior Staff-equivalent)"
+     - `"L7"` — desc: "Director (Principal-equivalent)"
+     - `"L8"` — desc: "Senior Director (Senior Principal-equivalent)"
    - Question 2 — header `"Role"`. Same role options as 2.5.
 
    **2.8. For each manager with a GitHub handle: their employees.**
@@ -141,17 +141,18 @@ Pick the first that applies:
    For **each** employee **with a GitHub handle**, ask level and role using the **IC-track level** options:
 
    - Question 1 — header `"Level"`, question `"Level for <Full Name> (<handle>)?"`. Options:
-     - `"L2"` — desc: "Autonomous on features"
-     - `"L3"` — desc: "Senior IC track, pre-Senior"
-     - `"Senior"` — desc: "Owns areas, drives reviews"
-     - `"Staff"` — desc: "Cross-team RFCs, mentorship, hiring"
+     - `"L2"` — desc: "Junior, autonomous on routine work"
+     - `"L3"` — desc: "Pre-senior, autonomous on features"
+     - `"L4"` — desc: "Senior, owns areas, drives reviews"
+     - `"L5"` — desc: "Staff, cross-team leverage"
    - Question 2 — header `"Role"`. Same role options.
 
-   The auto-added **Other** option (free text) captures anything outside the four explicit choices — L1, Senior Staff, Principal, Senior Principal, Distinguished, or any internal alias your org uses. For "Other" responses, normalize against the canonical lists:
+   The auto-added **Other** option (free text) captures anything outside the four explicit choices — L1 (intern), L6 (Senior Staff), L7 (Principal), L8 (Senior Principal), L9 (Distinguished), or any internal alias your org uses. For "Other" responses, normalize against the canonical L-numbers:
 
-   - Levels: `l1, l2, l3, senior, staff, senior staff, principal, senior principal, distinguished`
-   - IC-track aliases: `junior` → `l1`, `mid` → `l2`, `de1` / `de2` / `de3` → `l1` / `l2` / `l3`, `engineer 1` / `engineer 2` / `engineer 3` → `l1` / `l2` / `l3`.
-   - Manager-track aliases: `manager` → `staff`, `senior manager` → `senior staff`, `director` → `principal`, `senior director` → `senior principal`, `vp` → `distinguished`.
+   - Canonical levels: `l1, l2, l3, l4, l5, l6, l7, l8, l9`
+   - IC-track aliases: `junior` / `jr` / `mid` → `l2`; `senior` → `l4`; `staff` → `l5`; `senior staff` → `l6`; `principal` → `l7`; `senior principal` → `l8`; `distinguished` → `l9`.
+   - Manager-track aliases: `manager` / `engineering manager` / `em` → `l5`; `senior manager` → `l6`; `director` → `l7`; `senior director` → `l8`; `vp` → `l9`.
+   - Legacy aliases: `de1` / `de2` / `de3` → `l1` / `l2` / `l3`.
    - Roles: `swe, ae, mle, ds, da`
 
    If a typed value can't be normalized, re-ask just that field.

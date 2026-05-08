@@ -1,47 +1,53 @@
 {
   "vp": {
     "github": "janevp",
-    "name": "Jane VP"
+    "name": "Jane VP",
+    "employees": [
+      {"github": "vp-direct-ic", "name": "VP-Direct IC", "level": "l5", "role": "swe"}
+    ]
   },
   "directors": [
     {
       "github": "jane-dir",
       "name": "Jane Director",
-      "level": "principal",
+      "level": "l7",
       "role": "swe",
+      "employees": [
+        {"github": "dir-direct-ic", "name": "Director-Direct IC", "level": "l5", "role": "swe"}
+      ],
       "managers": [
         {
           "github": "alice-mgr",
           "name": "Alice Smith",
-          "level": "senior staff",
+          "level": "l6",
           "role": "swe",
           "employees": [
-            {"github": "alice", "name": "Alice Doe",      "level": "senior", "role": "swe"},
-            {"github": "carol", "name": "Carol Lee",      "level": "l3",    "role": "swe"},
-            {"github": "eve",   "name": "Eve Martinez",   "level": "l2",    "role": "swe"},
-            {"github": "ian",   "name": "Ian Park",       "level": "senior", "role": "ds"}
+            {"github": "alice", "name": "Alice Doe",    "level": "l4", "role": "swe"},
+            {"github": "carol", "name": "Carol Lee",    "level": "l3", "role": "swe"},
+            {"github": "eve",   "name": "Eve Martinez", "level": "l2", "role": "swe"},
+            {"github": "ian",   "name": "Ian Park",     "level": "l4", "role": "ds"}
           ]
         },
         {
           "github": "erin-mgr",
           "name": "Erin Brown",
-          "level": "senior",
+          "level": "l5",
           "role": "swe",
           "employees": [
-            {"github": "bob",   "name": "Bob Clark",      "level": "senior staff", "role": "swe"},
-            {"github": "hank",  "name": "Hank Reed",      "level": "l1",          "role": "swe"},
-            {"github": "frank", "name": "Frank Yates",    "level": "senior",       "role": "mle"}
+            {"github": "bob",   "name": "Bob Clark",   "level": "l6", "role": "swe"},
+            {"github": "hank",  "name": "Hank Reed",   "level": "l1", "role": "swe"},
+            {"github": "frank", "name": "Frank Yates", "level": "l4", "role": "mle"}
           ]
         },
         {
           "github": "ivy-mgr",
           "name": "Ivy Yu",
-          "level": "senior staff",
+          "level": "l6",
           "role": "mle",
           "employees": [
-            {"github": "jane",  "name": "Jane Singh",     "level": "staff", "role": "ae"},
-            {"github": "dave",  "name": "Dave Hill",      "level": "l1",   "role": "da"},
-            {"github": "grace", "name": "Grace Carter",   "level": "l2",   "role": "da"}
+            {"github": "jane",  "name": "Jane Singh",   "level": "l5", "role": "ae"},
+            {"github": "dave",  "name": "Dave Hill",    "level": "l1", "role": "da"},
+            {"github": "grace", "name": "Grace Carter", "level": "l2", "role": "da"}
           ]
         }
       ]
