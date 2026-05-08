@@ -51,15 +51,86 @@ Pick the first that applies:
 1. If `--org <path>` was passed and the file exists, use it.
 2. Else if `~/.werkschau/org.json` exists, use it.
 3. Else: **AskUserQuestion** with header "Org file" and question "No org.json found. How should we proceed?":
-   - Option 1: "Create from template at ~/.werkschau/org.json (recommended)" — copy the example then stop and tell the user to fill it in.
-   - Option 2: "Point to an existing org.json" — ask conversationally for a path.
-   - Option 3: "Cancel" — stop the command.
+   - Option 1: "Build interactively from a GitHub org (recommended)"
+   - Option 2: "Copy template to ~/.werkschau/org.json and edit manually"
+   - Option 3: "Point to an existing org.json elsewhere"
 
-   If option 1, run:
+   ### Option 1: Interactive bootstrap
+
+   Use this sub-flow. **Conversational input** for lists of people (faster than per-person AskUserQuestion). **AskUserQuestion** only for the structural confirmations.
+
+   **2.1.** Ask conversationally: *"What's the GitHub org handle? (e.g. `fanatics-gaming`)"*
+
+   Verify it exists:
+   ```bash
+   gh api /orgs/<HANDLE>
+   ```
+   If 404, tell the user the org wasn't found and ask again. Otherwise continue.
+
+   **2.2.** (Helpful but optional) Show member count for context:
+   ```bash
+   gh api /orgs/<HANDLE>/members --paginate --jq '. | length'
+   ```
+   "I see N members in `<HANDLE>`. We won't pull all of them — you'll specify the people you want in the report."
+
+   **2.3.** Ask conversationally: *"What's the VP's GitHub handle and full name? Format: `handle:Full Name`. Example: `janevp:Jane Smith`"*
+
+   Validate the handle:
+   ```bash
+   gh api /users/<HANDLE>
+   ```
+
+   **2.4.** Ask conversationally for the directors. Use this exact prompt:
+
+   *"List the directors reporting to `<VP>`. One per line, format: `handle:level:role:Full Name`*
+   *Levels: `de1, de2, de3, senior, staff, senior staff, principal, senior principal, distinguished`*
+   *Roles: `swe, ae, mle, ds, da`*
+   *Example: `alice-dir:principal:swe:Alice Smith`*
+   *Type `none` if there are no directors."*
+
+   Parse each line. For each, validate the GitHub handle via `gh api /users/<handle>`, validate the level is in the LEVELS list, validate the role is in the ROLES list. If any line is invalid, surface the specific error and ask the user to fix that line.
+
+   **2.5.** For each director, ask conversationally: *"Who reports to `<director>` as managers? Same format as before, one per line. Type `none` for no managers."*
+
+   Parse and validate as in 2.4.
+
+   **2.6.** For each manager (and any director who has no managers), ask: *"Who reports to `<leader>` as employees? Same format, one per line. Type `none` for no employees."*
+
+   Parse and validate.
+
+   **2.7.** Build the org JSON tree in memory matching the schema in `${CLAUDE_PLUGIN_ROOT}/org.example.json`.
+
+   Print a compact tree preview to the user — for example:
+
+   ```
+   Jane Smith (vp · janevp)
+   └─ Alice Smith (principal swe · alice-dir)
+      ├─ Bob Manager (senior staff swe · bob-mgr)
+      │  ├─ carol (DE3 swe)
+      │  └─ dave (DE1 swe)
+      └─ Erin Manager (staff mle · erin-mgr)
+         └─ frank (senior mle)
+   ```
+
+   **2.8. AskUserQuestion** with header "Confirm" and question "Save this org structure?":
+   - Option 1: "Yes, save to ~/.werkschau/org.json and run the report"
+   - Option 2: "Save and stop (I want to verify the file before running)"
+   - Option 3: "Edit and rebuild"
+
+   If option 3, loop back to 2.4 with the existing tree as the starting point.
+
+   If option 1 or 2: write the JSON to `~/.werkschau/org.json` via the `Write` tool. If option 1, continue to Step 3. If option 2, tell the user to run `/werkschau` again when ready. **Stop here.**
+
+   ### Option 2: Copy template
+
    ```bash
    mkdir -p ~/.werkschau && cp "${CLAUDE_PLUGIN_ROOT}/org.example.json" ~/.werkschau/org.json
    ```
-   Then tell the user to edit `~/.werkschau/org.json` with real handles, levels, and roles, then re-run `/werkschau`. **Stop here.**
+   Tell the user to edit `~/.werkschau/org.json` with real handles + levels + roles, then re-run `/werkschau`. **Stop here.**
+
+   ### Option 3: Point to existing
+
+   Ask conversationally for the path. Validate it exists. Use that path for `<ORG_PATH>` and continue to Step 3.
 
 Confirm the resolved path before continuing:
 
