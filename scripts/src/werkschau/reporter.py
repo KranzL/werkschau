@@ -128,6 +128,41 @@ report.
 """
 
 
+_BRIEF_SYSTEM_PROMPT = """\
+You are Werkschau, a calibrated GitHub activity retrospective writer.
+
+Given one engineer's commit-level data plus selected diff samples for the most
+substantive commits, write a concise narrative paragraph that summarizes their
+week's commit-visible work. The output is one paragraph of 2 to 5 sentences.
+
+Strict rules:
+
+- Be specific. Name what they built or changed, not how they felt about it.
+  "Added a search/commits fallback so discovery works in all-private orgs"
+  is correct. "Improved discovery" is not.
+- Cite the actual subsystem, file path, function, or commit message phrase
+  when the diff data supports it. If the data doesn't support specificity,
+  hedge ("touched the X module") rather than invent.
+- Note temporal patterns only when load-bearing (a Friday-night burst, a
+  weekend release, a single afternoon's focused session). Don't list every
+  weekday.
+- For Senior+ ICs and managers/directors: if commit volume is low, note that
+  this is expected and that most of their week likely lives outside commits
+  (review, design, mentorship). Don't read low volume as a red flag.
+- For Data Scientists, ML Engineers, and Data Analysts: low commit volume is
+  also normal because much of their week is in notebooks, BI tools, or
+  exploration that doesn't commit.
+- If the user has zero commits in the window, write: "No commit-visible
+  activity this week." plus one short sentence noting that this is normal for
+  their role/level and where the work likely lives.
+- Never emit a thumbs-up/thumbs-down rating. No "great work" / "needs
+  improvement". Describe what the commits show; the reader decides.
+- Never invent commit content the diff data does not support.
+- Output is plain prose. No bullets. No markdown. No headers. No code fences.
+  Just the paragraph.
+"""
+
+
 def generate_narrative(
     extract_data: dict[str, Any],
     provider: str = "anthropic",
@@ -141,6 +176,74 @@ def generate_narrative(
     if provider == "openai":
         return _call_openai(_SYSTEM_PROMPT, user_prompt, chosen_model, base_url)
     raise ValueError(f"Unknown LLM provider: {provider}")
+
+
+def generate_brief(
+    user_payload: dict[str, Any],
+    role: str | None,
+    level: str | None,
+    sample_diffs: list[dict[str, Any]],
+    provider: str = "anthropic",
+    model: str | None = None,
+    base_url: str | None = None,
+) -> str:
+    chosen_model = model or _DEFAULT_MODELS.get(provider, "claude-sonnet-4-6")
+    user_prompt = _build_brief_prompt(user_payload, role, level, sample_diffs)
+    if provider == "anthropic":
+        return _call_anthropic(_BRIEF_SYSTEM_PROMPT, user_prompt, chosen_model, base_url)
+    if provider == "openai":
+        return _call_openai(_BRIEF_SYSTEM_PROMPT, user_prompt, chosen_model, base_url)
+    raise ValueError(f"Unknown LLM provider: {provider}")
+
+
+def _build_brief_prompt(
+    user_payload: dict[str, Any],
+    role: str | None,
+    level: str | None,
+    sample_diffs: list[dict[str, Any]],
+) -> str:
+    summary = {
+        "user": user_payload.get("user"),
+        "role": role,
+        "level": level,
+        "commit_count": user_payload.get("commit_count", 0),
+        "repo_count": user_payload.get("repo_count", 0),
+        "repos_visited": user_payload.get("repos_visited", []),
+        "total_churn": user_payload.get("total_churn", 0),
+        "total_heuristic_effort_minutes": user_payload.get("total_heuristic_effort_minutes", 0),
+    }
+    commits_compact = []
+    for c in user_payload.get("commits", []) or []:
+        commits_compact.append({
+            "sha": (c.get("sha") or "")[:8],
+            "repo": c.get("repo"),
+            "message": c.get("message_first_line"),
+            "weekday": c.get("weekday"),
+            "additions": c.get("additions"),
+            "deletions": c.get("deletions"),
+            "files_changed": c.get("files_changed"),
+            "unique_top_dirs": c.get("unique_top_dirs"),
+            "file_paths_sample": c.get("file_paths_sample"),
+            "test_ratio": c.get("test_ratio"),
+        })
+    diffs_compact = []
+    for d in sample_diffs:
+        diffs_compact.append({
+            "sha": (d.get("sha") or "")[:8],
+            "repo": d.get("repo"),
+            "message": d.get("message"),
+            "files": d.get("files", []),
+        })
+    payload = {
+        "summary": summary,
+        "commits": commits_compact,
+        "sample_diffs": diffs_compact,
+    }
+    return (
+        "Write a brief-format narrative paragraph for this engineer's week. "
+        "Use the sample diffs to be specific about what they built or changed.\n\n"
+        f"<data>\n{json.dumps(payload, indent=2, default=str)}\n</data>"
+    )
 
 
 def _build_user_prompt(extract_data: dict[str, Any]) -> str:

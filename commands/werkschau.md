@@ -1,6 +1,6 @@
 ---
-description: Audit one or more developers' GitHub activity over a window and write a narrative retrospective with effort estimates per initiative
-argument-hint: "[--team <name>] [--since 7d|30d|1y|ISO8601] [--include-merges]"
+description: Generate the weekly engineering org snapshot HTML report from org.json. Uses your gh auth and Claude Code as the LLM (no API key needed).
+argument-hint: "[--org <path>] [--since 7d|30d|ISO8601] [--issue N]"
 allowed-tools:
   - Read
   - Bash
@@ -10,11 +10,19 @@ allowed-tools:
   - AskUserQuestion
 ---
 
-# Werkschau: GitHub Activity Retrospective
+# Werkschau: Weekly Engineering Org Snapshot
 
-> Note: For cron / CI use, run `werkschau report` directly (needs an LLM API key). The slash command is for interactive use inside Claude Code.
+Generates the NYT-style HTML report (nameplate, callouts, quadrant chart, manager rollups, per-contributor ledger, per-manager Breakdown pages, methodology colophon) from an `org.json` defining the VP / directors / managers / employees and their levels + roles.
 
-Discover every repo each user touched in the window, pull their commits + diff features, then cluster the work into themes and write a per-person narrative with effort estimates calibrated to each person's level.
+This slash command uses your `gh` auth for GitHub and Claude (this conversation) for narrative writing — no API key needed. For automated cron use, run `werkschau report-org` directly with an Anthropic or OpenAI-compatible key.
+
+**Argument parsing.** Before doing anything else, parse `$ARGUMENTS` (the user's text after `/werkschau`) for these flags. Treat them as optional:
+
+- `--org <path>` — explicit path to org.json
+- `--since <window>` — e.g. `7d`, `14d`, `30d`, or ISO8601
+- `--issue <N>` — issue number for the nameplate
+
+Anything not passed will be asked or defaulted in the steps below.
 
 ## Step 1: Verify setup
 
@@ -22,165 +30,189 @@ Discover every repo each user touched in the window, pull their commits + diff f
 test -f "${CLAUDE_PLUGIN_ROOT}/.venv/bin/werkschau" && echo "READY" || echo "SETUP_NEEDED"
 ```
 
-If `SETUP_NEEDED`, run the installer yourself (do not ask the user to run pip/python -- just do it):
+If `SETUP_NEEDED`, run the installer yourself (do not ask the user):
 
 ```bash
 bash "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/install.sh"
 ```
 
-Then confirm `gh` is authenticated:
+Confirm `gh` is authenticated:
 
 ```bash
 gh auth status
 ```
 
-If `gh` is not authenticated, stop and tell the user to run `gh auth login` before continuing.
+If `gh` is not authenticated, stop and tell the user to run `gh auth login`.
 
-## Step 2: Resolve the team
+## Step 2: Resolve org.json
 
-There are three ways the team is decided. Pick the first one that applies:
+Pick the first that applies:
 
-### 2a. Shortcut: `--team <name>` was passed
+1. If `--org <path>` was passed and the file exists, use it.
+2. Else if `~/.werkschau/org.json` exists, use it.
+3. Else: **AskUserQuestion** with header "Org file" and question "No org.json found. How should we proceed?":
+   - Option 1: "Create from template at ~/.werkschau/org.json (recommended)" — copy the example then stop and tell the user to fill it in.
+   - Option 2: "Point to an existing org.json" — ask conversationally for a path.
+   - Option 3: "Cancel" — stop the command.
 
-Skip Step 2 entirely and use the saved team:
-
-```bash
-${CLAUDE_PLUGIN_ROOT}/.venv/bin/werkschau team show <name>
-```
-
-If the team file does not exist, surface the error and continue to 2b.
-
-### 2b. Interactive: collect the team
-
-Use **AskUserQuestion** for the first decision:
-
-**Question: "Who do you want to audit?"**
-Header: "Scope"
-Options:
-- "Just me / one person" -- single user, prompt conversationally for the username
-- "A team in a single GitHub org" -- list org members and pick from them
-- "A team across multiple orgs / arbitrary list" -- collect usernames conversationally
-
-**If "single GitHub org":**
-1. Ask conversationally: "Which org?"
-2. Enumerate members:
+   If option 1, run:
    ```bash
-   gh api /orgs/<org>/members --paginate --jq '.[].login'
+   mkdir -p ~/.werkschau && cp "${CLAUDE_PLUGIN_ROOT}/org.example.json" ~/.werkschau/org.json
    ```
-3. If the list is short (<= 25), use **AskUserQuestion** with multiSelect=true and one option per login:
-   - Header: "Team"
-   - Question: "Pick the team members"
-   - Options: one per login from the gh output
-4. If the list is long (>25), ask conversationally instead: "I see {N} members in {org}. Drop the GitHub usernames you want to audit, comma-separated or one per line."
+   Then tell the user to edit `~/.werkschau/org.json` with real handles, levels, and roles, then re-run `/werkschau`. **Stop here.**
 
-**If "arbitrary list" or "single person":**
-Ask conversationally: "Drop the GitHub usernames you want to audit, comma-separated or one per line." Accept the next message as the answer; trim whitespace, split on whitespace and commas, deduplicate.
-
-### 2c. Collect levels
-
-Once the team is collected (>= 1 username), ask for the level of each member. Use **a single AskUserQuestion call** with one question per teammate:
-
-For each user, add a question:
-- Header: `<username>` (truncated to 12 chars if longer; AskUserQuestion headers are short)
-- Question: `"Level for <username>?"`
-- Options:
-  - "Junior" -- 0-3 yrs, mostly guided work
-  - "Mid" -- 3-6 yrs, autonomous on features
-  - "Senior" -- 6-10 yrs, owns areas, drives reviews
-  - "Staff" -- cross-team, mostly RFCs / leverage / mentorship
-  - "Principal" -- strategy / architecture, low commit volume by design
-  - "Skip / unknown" -- no level calibration for this user
-
-If the user picks "Skip / unknown", store level as `null` for that user.
-
-### 2d. Offer to save
-
-If 2 or more members were collected via interactive flow, **AskUserQuestion**:
-
-**Question: "Save this team for future runs?"**
-Header: "Save"
-Options:
-- "Yes, save as a named team"
-- "No, run this once"
-
-If yes, ask conversationally for a team name (alphanumeric + `-`/`_`), then save:
+Confirm the resolved path before continuing:
 
 ```bash
-${CLAUDE_PLUGIN_ROOT}/.venv/bin/werkschau team save <name> \
-  --user <user1>:<level1> \
-  --user <user2>:<level2> ...
+test -f <ORG_PATH> && echo "OK" || echo "MISSING"
 ```
 
-Tell the user how to reuse it: `/werkschau --team <name> --since <window>`.
+## Step 3: Resolve window
 
-## Step 3: Extract
+If `--since <window>` was passed, use it.
 
-Build one `--user USER:LEVEL` flag per member (or `--user USER` if level is null):
+Else **AskUserQuestion** with header "Window" and question "What time window should this report cover?":
+
+- Option 1: "Past 7 days (recommended weekly cadence)"
+- Option 2: "Past 14 days"
+- Option 3: "Past 30 days"
+
+Map the answer to `7d`, `14d`, `30d`, or whatever the user types in "Other". Store as `<SINCE>`.
+
+## Step 4: Resolve issue number
+
+The issue number appears in the masthead ("Vol. I · No. N").
+
+1. If `--issue <N>` was passed, use it.
+2. Else, count existing reports in cwd to auto-detect:
+   ```bash
+   ls werkschau-*.html 2>/dev/null | wc -l
+   ```
+   If the count is 0, default `<ISSUE>=1` silently.
+3. If the count is `>=1`, **AskUserQuestion** with header "Issue No." and question "What issue number is this?":
+   - Option 1: "<auto-suggested N+1> (next in sequence)"
+   - Option 2: "Same as last (overwrite)"
+   - Option 3: "Custom"
+
+   Default to the auto-suggested value if the user picks option 1.
+
+## Step 5: Extract
+
+Resolve a tmp prefix tied to the user's id, then run extract for every non-VP person in the org in one shot:
 
 ```bash
+TMPID=$(id -u)
 ${CLAUDE_PLUGIN_ROOT}/.venv/bin/werkschau extract \
-  --user "<u1>:<l1>" \
-  --user "<u2>:<l2>" \
-  --since "<since>" \
-  --output "/tmp/werkschau-$(id -u).json"
+  --org <ORG_PATH> \
+  --since "<SINCE>" \
+  --output "/tmp/werkschau-extract-${TMPID}.json"
 ```
 
-If `--team <name>` was passed, use `--team <name>` instead of repeated `--user` flags.
+Stream stderr so the user sees discovery progress per person.
 
-Stream the stderr to the user so they see discovery progress.
+If a person reports "no authored commits found in window," note it but continue — the report still includes them with a "No commit-visible activity this week." narrative.
 
-If the extractor reports no authored commits for a user, surface that explicitly -- it usually means the username is wrong, that user commits under a different login, or your auth doesn't have visibility into the repos they pushed to (search/commits will only return private repos the authenticated user can see).
+## Step 6: Load extract + org
 
-## Step 4: Load results
+Read both JSON files via `Read`:
 
-Read the JSON at `/tmp/werkschau-$(id -u).json`. Resolve `$(id -u)` first via `Bash`. The payload shape:
+- `/tmp/werkschau-extract-${TMPID}.json` — the extract payload, with `users[]`
+- `<ORG_PATH>` — the org tree
 
-- `since`, `until` -- the window
-- `team` -- the team name (or null if ad-hoc)
-- `users[]` -- one entry per user, each with:
-  - `user`, `level`
-  - `repos_visited`, `repo_count`, `commit_count`
-  - `total_churn`, `total_heuristic_effort_minutes`
-  - `commits[]` -- per-commit features (see the skill for fields)
+For each person, you'll need: github handle, level, role, manager, director.
 
-## Step 5: Read the skill
+## Step 7: Sample diffs per user
 
-Read `${CLAUDE_PLUGIN_ROOT}/skills/werkschau-analysis/SKILL.md` for clustering rules, level calibration, comparative report format, and the perf-management guardrails.
+For each user with `commit_count > 0`, identify the top 3 most substantive commits (highest `heuristic_effort_minutes`, prefer those with `unique_top_dirs >= 3` or `files_changed >= 5`). Skip dependency-bumps and merges.
 
-## Step 6: Cluster + estimate per user
-
-For each user in `users[]`:
-1. Cluster their commits into 2-8 initiatives (default key = repo, split when work clearly diverges).
-2. For each initiative, read 2-4 of the most substantive commits in full via `gh api /repos/{owner}/{repo}/commits/{sha}` to write specific narrative.
-3. Estimate effort hours per initiative, calibrated to the user's level using the calibration table in the skill. Honor the inversion: at Staff/Principal, low commit volume is often expected and not a red flag.
-4. Sum to a per-user total estimated effort.
-
-Skip per-commit deep-reads for trivial commits (dependency bumps, lockfile-only, single-line typos) -- the heuristic features are sufficient.
-
-## Step 7: Generate the combined report
-
-Follow the multi-user format in the skill:
-
-1. **Header** -- window, team name (if any), member count
-2. **Comparative summary table** -- one row per user with level, commit count, estimated effort, and a "tracking high / on pace / tracking low *for level*" tag. **Never emit a thumbs-up/thumbs-down rating per person -- only describe what's visible and how it compares to that level's typical commit-visible output.**
-3. **Per-user sections** -- one section per user with their initiatives ordered by effort descending, plus an "Activity profile" subsection (cadence, weekend work, time-of-day pattern)
-4. **Cross-team observations** -- coauthorship pairs, shared initiatives if multiple users worked on the same repo, week-over-week trends if the window is long enough
-5. **Caveats** -- the standard ones from v0.1, plus the level-calibration disclaimer
-
-Display the report inline.
-
-## Step 8: Save the report
-
-Save to `werkschau_<team-or-first-user>_<YYYYMMDD>_<HHMMSS>.md` in the current working directory:
+For each selected commit, fetch the full diff:
 
 ```bash
-date +%Y%m%d_%H%M%S
+gh api "/repos/<owner>/<repo>/commits/<sha>" --jq '{
+  sha: .sha,
+  message: .commit.message,
+  files: [.files[] | {filename, status, additions, deletions, patch: (.patch // "" | .[:1500])}]
+}'
 ```
 
-Confirm to the user with the saved filename.
+Cap each commit's `patch` at ~1500 chars. Keep up to 8 files per commit.
 
-## Step 9: Cleanup
+Skip diff-fetching entirely for users with `commit_count == 0`.
+
+## Step 8: Write per-person briefs
+
+For each scored person (every non-VP — directors, managers, ICs, all of them), write a 2 to 5 sentence narrative paragraph grounded in their commits + sampled diffs.
+
+**Format rules (strict):**
+
+- Be specific. Name what they built or changed, not how they felt about it.
+  *"Added a search/commits fallback so discovery works in all-private orgs"* is right.
+  *"Improved discovery"* is wrong.
+- Cite actual subsystem, file path, function name, or commit-message phrase when the diff supports it. If the data doesn't support specificity, hedge ("touched the X module") rather than invent.
+- Note temporal patterns only when load-bearing (a Friday-night burst, weekend release, single-afternoon focused session). Don't list every weekday.
+- For Senior+ ICs, managers, directors: if commit volume is low, note that this is expected and most of their week likely lives outside commits (review, design, mentorship). Do not read low volume as a red flag.
+- For Data Scientists, ML Engineers, Data Analysts: low commit volume is normal — much of their week is in notebooks, BI tools, or dashboards that don't commit.
+- If `commit_count == 0`: write `"No commit-visible activity this week."` plus one short sentence noting that's normal for their role/level.
+- Never emit a thumbs-up/thumbs-down. No "great work" / "needs improvement". Describe what the commits show; the reader decides.
+- Never invent commit content the diffs don't support.
+- Output is plain prose — no bullets, no markdown, no headers, no code fences.
+
+Build a JSON object mapping handle → narrative paragraph and write it to `/tmp/werkschau-narratives-${TMPID}.json`:
+
+```json
+{
+  "alice": "Lead engineer on...",
+  "carol": "Continued the platform/api authorization-layer work...",
+  "...": "..."
+}
+```
+
+Use `Write` to save it.
+
+## Step 9: Render
 
 ```bash
-rm -f "/tmp/werkschau-$(id -u).json"
+${CLAUDE_PLUGIN_ROOT}/.venv/bin/werkschau report-org \
+  --org <ORG_PATH> \
+  --extract "/tmp/werkschau-extract-${TMPID}.json" \
+  --narratives "/tmp/werkschau-narratives-${TMPID}.json" \
+  --since "<SINCE>" \
+  --issue <ISSUE> \
+  --output "werkschau-$(date +%Y-%m-%d).html"
+```
+
+The `--narratives` flag tells `report-org` to use the pre-baked paragraphs and skip the LLM API call. No key needed.
+
+## Step 10: Confirm and cleanup
+
+Tell the user the saved filename. Show a one-line summary: how many contributors, how many in "locked in" / "not locked in", median output of the org.
+
+Cleanup:
+
+```bash
+rm -f "/tmp/werkschau-extract-${TMPID}.json" "/tmp/werkschau-narratives-${TMPID}.json"
+```
+
+Tell the user they can attach the HTML directly to their VP's email.
+
+## Notes for automated runs
+
+For cron / CI / scheduled runs, skip this slash command and run `werkschau report-org` directly with an LLM API key:
+
+```bash
+WERKSCHAU_OPENAI_API_KEY=<key> \
+werkschau report-org \
+  --org ~/.werkschau/org.json \
+  --since 7d \
+  --output report-$(date +%Y-%m-%d).html \
+  --provider openai \
+  --base-url https://api.venice.ai/api/v1 \
+  --model qwen3-coder-480b-a35b-instruct-turbo
+```
+
+Or with Anthropic:
+
+```bash
+WERKSCHAU_ANTHROPIC_API_KEY=<key> \
+werkschau report-org --org ~/.werkschau/org.json --since 7d --output report.html
 ```

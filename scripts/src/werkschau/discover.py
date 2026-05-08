@@ -7,6 +7,9 @@ from .gh_api import GhError, gh_api
 
 
 def discover_repos(user: str, since: datetime, until: datetime) -> list[tuple[str, str]]:
+    if not _user_exists(user):
+        print(f"[{user}] github user not found; skipping discovery", file=sys.stderr)
+        return []
     repos: set[tuple[str, str]] = set()
     try:
         repos.update(_discover_via_events(user, since, until))
@@ -17,6 +20,14 @@ def discover_repos(user: str, since: datetime, until: datetime) -> list[tuple[st
     except GhError as exc:
         print(f"[{user}] search discovery failed: {exc}", file=sys.stderr)
     return sorted(repos)
+
+
+def _user_exists(user: str) -> bool:
+    try:
+        gh_api(f"/users/{user}")
+        return True
+    except GhError:
+        return False
 
 
 def _discover_via_events(user: str, since: datetime, until: datetime) -> set[tuple[str, str]]:

@@ -1,33 +1,119 @@
 from __future__ import annotations
 
-LEVELS: tuple[str, ...] = ("junior", "mid", "senior", "staff", "principal")
+LEVELS: tuple[str, ...] = (
+    "de1",
+    "de2",
+    "de3",
+    "senior",
+    "staff",
+    "senior staff",
+    "principal",
+    "senior principal",
+    "distinguished",
+)
+
+LEVEL_BASELINE_MINUTES: dict[str, int] = {
+    "de1": 600,
+    "de2": 700,
+    "de3": 700,
+    "senior": 600,
+    "staff": 400,
+    "senior staff": 300,
+    "principal": 250,
+    "senior principal": 180,
+    "distinguished": 120,
+}
+
+ROLES: tuple[str, ...] = ("swe", "ae", "mle", "ds", "da")
+
+ROLE_MULTIPLIER: dict[str, float] = {
+    "swe": 1.0,
+    "ae": 0.9,
+    "mle": 0.8,
+    "ds": 0.55,
+    "da": 0.5,
+}
+
+
+def normalize_role(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = " ".join(value.strip().lower().split())
+    if not cleaned:
+        return None
+    if cleaned in ROLES:
+        return cleaned
+    aliases = {
+        "software engineer": "swe",
+        "software": "swe",
+        "engineer": "swe",
+        "analytics engineer": "ae",
+        "analytics": "ae",
+        "ml engineer": "mle",
+        "ml": "mle",
+        "machine learning engineer": "mle",
+        "machine learning": "mle",
+        "data scientist": "ds",
+        "data science": "ds",
+        "data analyst": "da",
+        "analyst": "da",
+    }
+    if cleaned in aliases:
+        return aliases[cleaned]
+    raise ValueError(f"unknown role {value!r}; expected one of {ROLES}")
+
+
+def baseline_minutes(role: str | None, level: str | None) -> float | None:
+    if level is None:
+        return None
+    level_norm = normalize_level(level)
+    if level_norm is None or level_norm not in LEVEL_BASELINE_MINUTES:
+        return None
+    base = LEVEL_BASELINE_MINUTES[level_norm]
+    if role is None:
+        return float(base)
+    role_norm = normalize_role(role)
+    if role_norm is None:
+        return float(base)
+    return float(base) * ROLE_MULTIPLIER.get(role_norm, 1.0)
 
 
 def normalize_level(value: str | None) -> str | None:
     if value is None:
         return None
-    cleaned = value.strip().lower()
+    cleaned = " ".join(value.strip().lower().split())
     if not cleaned:
         return None
     if cleaned in LEVELS:
         return cleaned
     aliases = {
-        "jr": "junior",
-        "intern": "junior",
-        "l1": "junior",
-        "l2": "junior",
-        "middle": "mid",
-        "mid-level": "mid",
-        "midlevel": "mid",
-        "l3": "mid",
-        "l4": "mid",
+        "junior": "de1",
+        "jr": "de1",
+        "intern": "de1",
+        "l1": "de1",
+        "l2": "de2",
+        "mid": "de2",
+        "middle": "de2",
+        "mid-level": "de2",
+        "midlevel": "de2",
+        "l3": "de2",
+        "l4": "de3",
         "sr": "senior",
         "l5": "senior",
         "staff+": "staff",
         "l6": "staff",
+        "sr staff": "senior staff",
+        "sr. staff": "senior staff",
+        "senior-staff": "senior staff",
+        "l7": "senior staff",
         "principal+": "principal",
-        "l7": "principal",
         "l8": "principal",
+        "sr principal": "senior principal",
+        "sr. principal": "senior principal",
+        "senior-principal": "senior principal",
+        "l9": "senior principal",
+        "distinguished engineer": "distinguished",
+        "l10": "distinguished",
     }
     if cleaned in aliases:
         return aliases[cleaned]
