@@ -388,13 +388,26 @@ def _render_vp_direct_brief(org: Org, direct_reports: list[Person], by_id: dict)
 
 def _card(block: UserBlock, lead: bool) -> str:
     meta = _meta_chip(block)
-    narrative = block.narrative.strip() or "No commit-visible activity this week."
+    narrative = block.narrative.strip()
+    summary, bullets = _parse_brief(narrative) if narrative else ("", [])
+    if not summary and not bullets:
+        summary = "No commit-visible activity this week."
     cls = "brief-person brief-person-lead" if lead else "brief-person"
     label = block.person.name or (block.person.github or "")
+
+    parts = [f'<h3>{_html(label)} <em>{meta}</em></h3>']
+    if block.person.description:
+        parts.append(
+            f'<p class="brief-person-owns"><em>Owns</em> {_html(block.person.description)}</p>'
+        )
+    if summary:
+        parts.append(f'<p class="brief-person-summary">{_bold_md(summary)}</p>')
+    if bullets:
+        items = "".join(f'<li>{_bold_md(b)}</li>' for b in bullets)
+        parts.append(f'<ul class="brief-person-bullets">{items}</ul>')
     return f"""
       <div class="{cls}">
-        <h3>{_html(label)} <em>{meta}</em></h3>
-        <p class="brief-person-body">{_html(narrative)}</p>
+        {''.join(parts)}
       </div>"""
 
 
@@ -403,11 +416,47 @@ def _offgrid_card(person: Person, lead: bool) -> str:
     role_chip = f"{(person.level or '').upper()} {(person.role or '').upper()}".strip()
     chip = role_chip if role_chip else "no GitHub account"
     label = person.name or (person.github or "")
+    parts = [f'<h3>{_html(label)} <em>{_html(chip)}</em></h3>']
+    if person.description:
+        parts.append(
+            f'<p class="brief-person-owns"><em>Owns</em> {_html(person.description)}</p>'
+        )
+    parts.append(
+        '<p class="brief-person-summary"><em>Not on GitHub. Commit-visible activity is not tracked for this person.</em></p>'
+    )
     return f"""
       <div class="{cls}">
-        <h3>{_html(label)} <em>{_html(chip)}</em></h3>
-        <p class="brief-person-body"><em>Not on GitHub. Commit-visible activity is not tracked for this person.</em></p>
+        {''.join(parts)}
       </div>"""
+
+
+def _parse_brief(narrative: str) -> tuple[str, list[str]]:
+    lines = [l.rstrip() for l in narrative.strip().split("\n")]
+    summary_parts: list[str] = []
+    bullets: list[str] = []
+    for raw in lines:
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith(("- ", "* ", "• ")):
+            bullets.append(line[2:].strip())
+        elif line.startswith("-") and len(line) > 1 and line[1] != "-":
+            bullets.append(line[1:].strip())
+        else:
+            if not bullets:
+                summary_parts.append(line)
+    return " ".join(summary_parts).strip(), bullets
+
+
+def _bold_md(s: str) -> str:
+    parts = s.split("**")
+    out: list[str] = []
+    for i, part in enumerate(parts):
+        if i % 2 == 1:
+            out.append(f"<strong>{_html(part)}</strong>")
+        else:
+            out.append(_html(part))
+    return "".join(out)
 
 
 def _meta_chip(b: UserBlock) -> str:
@@ -433,18 +482,21 @@ def _about_text() -> str:
     return (
         "<span class=\"dropcap\">W</span>erkschau measures commit-visible work only. "
         "Code review, design, mentorship, debugging, exploratory analysis in notebooks, "
-        "and dashboards built in BI tools are invisible here — a bias largest for L4+ ICs "
-        "and for Data Scientists, ML Engineers, and Data Analysts. Managers and directors "
-        "are scored as contributors alongside ICs whenever they ship code; only the audience "
-        "leader (the VP) is exempt. Output is calibrated to per-level baselines (commit-visible "
-        "minutes per week): L1 500, L2 600, L3 700, L4 600, L5 400, L6 300, L7 250, L8 180, "
-        "L9 120. Manager-track titles map to their L-numbers (Manager = L5, Senior Manager = L6, "
-        "Director = L7, Senior Director = L8). Baselines are scaled per role: SWE 1.0, AE 0.9, "
-        "MLE 0.8, DS 0.55, DA 0.5. Effort is weighted by per-commit complexity. Each commit is "
-        "categorized by message prefix and file paths into Features, Bug fixes, Refactor, "
-        "Infrastructure, Tests, or Documentation; the dominant category appears when one exceeds "
-        "half of the week's effort. Manager rollups are the median of each manager's direct "
-        "reports — the manager's own score appears separately in the ledger."
+        "and dashboards built in BI tools are invisible here — a bias largest for senior "
+        "ICs and for Data Scientists, ML Engineers, and Data Analysts. Managers and "
+        "directors are scored as contributors alongside ICs whenever they ship code; only "
+        "the audience leader (the VP) is exempt. Output is the log-ratio of "
+        "complexity-weighted commit minutes to a fixed 600 minute / week reference. "
+        "Volume drives placement; levels and roles do not enter the formula. The neutral "
+        "midline (output 0) sits at 600 weighted minutes per week — about ten hours of "
+        "commit-visible work, complexity-weighted. Above that, you climb toward the "
+        "locked-in zone; below, toward not locked in. Levels and roles still appear on "
+        "each contributor's card and in the ledger as human context, but they do not "
+        "shift the chart. Each commit is categorized by message prefix and file paths "
+        "into Features, Bug fixes, Refactor, Infrastructure, Tests, or Documentation, "
+        "falling back to the top-touched directory when no category dominates. Manager "
+        "rollups are the median of each manager's direct reports — the manager's own "
+        "score appears separately in the ledger."
     )
 
 
@@ -470,11 +522,11 @@ _CHART_SVG_TEMPLATE = """<svg class="chart-svg" viewBox="0 0 540 460" xmlns="htt
   <text x="85"  y="350" text-anchor="start" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="12" letter-spacing="0.04em" fill="#c4192c" font-weight="600">not locked in</text>
   <g transform="translate(26, 210) rotate(-90)"><text text-anchor="middle" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="10" font-weight="700" letter-spacing="0.24em" fill="#121212">OUTPUT</text></g>
   <text x="72" y="64"  text-anchor="end" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="700" fill="#121212">+1</text>
-  <text x="72" y="76"  text-anchor="end" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="9.5" fill="#666666">2× baseline</text>
+  <text x="72" y="76"  text-anchor="end" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="9.5" fill="#666666">≈1200 min/wk</text>
   <text x="72" y="214" text-anchor="end" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="600" fill="#666666">0</text>
-  <text x="72" y="226" text-anchor="end" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="9.5" fill="#666666">at baseline</text>
+  <text x="72" y="226" text-anchor="end" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="9.5" fill="#666666">≈600 min/wk</text>
   <text x="72" y="364" text-anchor="end" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="700" fill="#121212">−1</text>
-  <text x="72" y="352" text-anchor="end" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="9.5" fill="#666666">½ baseline</text>
+  <text x="72" y="352" text-anchor="end" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="9.5" fill="#666666">≈300 min/wk</text>
   <g stroke="#121212" stroke-width="1">
     <line x1="76" y1="60"  x2="80" y2="60"/>
     <line x1="76" y1="210" x2="80" y2="210"/>
@@ -593,7 +645,14 @@ td.work em { font-family: var(--serif); font-style: italic; letter-spacing: 0; t
 .brief-person-lead { background: var(--paper-deep); padding: 16px 16px 14px; margin: 4px -16px 12px; border-top: 1px solid var(--rule-strong); border-bottom: 1px solid var(--rule-strong); }
 .brief-person h3 { font-family: var(--serif); font-weight: 700; font-size: 18px; line-height: 1.3; color: var(--ink); margin: 0 0 6px; letter-spacing: -0.005em; }
 .brief-person h3 em { font-style: normal; font-family: var(--sans); font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--mute); margin-left: 8px; font-weight: 600; vertical-align: 1px; }
-.brief-person-body { font-family: var(--serif); font-size: 15.5px; line-height: 1.6; color: var(--body); margin: 0; }
+.brief-person-owns { font-family: var(--serif); font-size: 13px; line-height: 1.5; color: var(--mute); margin: 0 0 8px; padding: 0; font-style: italic; }
+.brief-person-owns em { font-family: var(--sans); font-style: normal; font-size: 9px; font-weight: 700; letter-spacing: 0.22em; text-transform: uppercase; color: var(--ink); margin-right: 8px; padding: 1px 6px; background: var(--paper-deep); border: 1px solid var(--rule); vertical-align: 1px; }
+.brief-person-summary { font-family: var(--serif); font-size: 15.5px; line-height: 1.55; color: var(--body); margin: 0 0 8px; }
+.brief-person-bullets { font-family: var(--serif); font-size: 14.5px; line-height: 1.55; color: var(--body); margin: 0; padding: 0; list-style: none; }
+.brief-person-bullets li { margin: 0 0 5px; padding-left: 14px; position: relative; }
+.brief-person-bullets li::before { content: ""; position: absolute; left: 0; top: 0.7em; width: 5px; height: 1px; background: var(--ink); }
+.brief-person-bullets li:last-child { margin-bottom: 0; }
+.brief-person-bullets strong { font-weight: 700; color: var(--ink); }
 .colophon { margin-top: 60px; padding-top: 20px; border-top: 3px double var(--ink); }
 .colophon-head { display: flex; align-items: center; gap: 11px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.24em; text-transform: uppercase; color: var(--ink); margin: 0 0 16px; font-family: var(--sans); }
 .colophon-body { font-family: var(--serif); font-size: 14.5px; line-height: 1.65; color: var(--body); margin: 0 0 14px; }
@@ -655,7 +714,7 @@ _PAGE = """<!DOCTYPE html>
   <figure class="chart">
     {chart}
     <figcaption class="chart-cap">
-      <p><b>Note</b>Output is the log-ratio of commit-visible effort to a level baseline, scaled per role and weighted by per-commit complexity. Focus is the Herfindahl index of churn distributed across repositories. Each shape is one contributor; circles denote individual contributors and squares denote managers. The quadrant follows the sign of the two scores; the upper-right is the target.</p>
+      <p><b>Note</b>Output is the log-ratio of complexity-weighted commit minutes to a fixed 600 minute / week reference. Levels and roles do not affect the chart — only what was committed and how complex it was. Above the midline you climb toward locked in; below, toward not locked in. Focus is a 60/40 blend of average-commit depth and repo concentration. Each shape is one contributor; circles denote ICs and squares denote managers.</p>
     </figcaption>
   </figure>
 

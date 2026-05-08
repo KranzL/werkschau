@@ -371,6 +371,7 @@ def report_org(
                 role=person.role,
                 level=person.level,
                 sample_diffs=sample_diffs,
+                description=person.description,
                 provider=provider,
                 model=model,
                 base_url=base_url,

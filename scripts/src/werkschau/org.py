@@ -17,6 +17,7 @@ class Person:
     role: str | None
     manager: str | None
     director: str | None
+    description: str | None = None
     is_vp: bool = False
     is_director: bool = False
     is_manager: bool = False
@@ -75,6 +76,11 @@ def _normalize_handle(raw: dict[str, Any]) -> str | None:
     return handle or None
 
 
+def _description(raw: dict[str, Any]) -> str | None:
+    d = (raw.get("description") or "").strip()
+    return d or None
+
+
 def _build_org(raw: dict[str, Any]) -> Org:
     vp_raw = raw.get("vp")
     if not vp_raw or not (vp_raw.get("github") or vp_raw.get("name")):
@@ -90,6 +96,7 @@ def _build_org(raw: dict[str, Any]) -> Org:
         role=None,
         manager=None,
         director=None,
+        description=_description(vp_raw),
         is_vp=True,
     )
 
@@ -97,31 +104,60 @@ def _build_org(raw: dict[str, Any]) -> Org:
     seen_ids: set[str] = {vp_id}
 
     for e_raw in vp_raw.get("employees", []) or []:
-        employee = _build_employee(e_raw, manager_id=vp_id, director_id=None)
-        _check_duplicate(employee, seen_ids)
-        people.append(employee)
+        emp = _build_employee(e_raw, manager_id=vp_id, director_id=None)
+        _check_duplicate(emp, seen_ids)
+        people.append(emp)
 
-    for d_raw in raw.get("directors", []) or []:
-        director = _build_director(d_raw, vp_id=vp_id)
-        _check_duplicate(director, seen_ids)
-        people.append(director)
+    top_directors = list(vp_raw.get("directors", []) or []) + list(raw.get("directors", []) or [])
+    for d_raw in top_directors:
+        _add_director_subtree(d_raw, parent_id=vp_id, people=people, seen_ids=seen_ids)
 
-        for e_raw in d_raw.get("employees", []) or []:
-            employee = _build_employee(e_raw, manager_id=director.id, director_id=director.id)
-            _check_duplicate(employee, seen_ids)
-            people.append(employee)
-
-        for m_raw in d_raw.get("managers", []) or []:
-            manager = _build_manager(m_raw, director_id=director.id)
-            _check_duplicate(manager, seen_ids)
-            people.append(manager)
-
-            for e_raw in m_raw.get("employees", []) or []:
-                employee = _build_employee(e_raw, manager_id=manager.id, director_id=director.id)
-                _check_duplicate(employee, seen_ids)
-                people.append(employee)
+    for m_raw in vp_raw.get("managers", []) or []:
+        _add_manager_subtree(m_raw, parent_id=vp_id, director_id=None, people=people, seen_ids=seen_ids)
 
     return Org(vp=vp, people=tuple(people))
+
+
+def _add_director_subtree(
+    raw: dict[str, Any],
+    parent_id: str,
+    people: list[Person],
+    seen_ids: set[str],
+) -> None:
+    director = _build_director(raw, parent_id=parent_id)
+    _check_duplicate(director, seen_ids)
+    people.append(director)
+
+    for e_raw in raw.get("employees", []) or []:
+        emp = _build_employee(e_raw, manager_id=director.id, director_id=director.id)
+        _check_duplicate(emp, seen_ids)
+        people.append(emp)
+
+    for nested_d in raw.get("directors", []) or []:
+        _add_director_subtree(nested_d, parent_id=director.id, people=people, seen_ids=seen_ids)
+
+    for m_raw in raw.get("managers", []) or []:
+        _add_manager_subtree(
+            m_raw, parent_id=director.id, director_id=director.id,
+            people=people, seen_ids=seen_ids,
+        )
+
+
+def _add_manager_subtree(
+    raw: dict[str, Any],
+    parent_id: str,
+    director_id: str | None,
+    people: list[Person],
+    seen_ids: set[str],
+) -> None:
+    manager = _build_manager(raw, parent_id=parent_id, director_id=director_id)
+    _check_duplicate(manager, seen_ids)
+    people.append(manager)
+
+    for e_raw in raw.get("employees", []) or []:
+        emp = _build_employee(e_raw, manager_id=manager.id, director_id=director_id)
+        _check_duplicate(emp, seen_ids)
+        people.append(emp)
 
 
 def _check_duplicate(person: Person, seen_ids: set[str]) -> None:
@@ -130,7 +166,7 @@ def _check_duplicate(person: Person, seen_ids: set[str]) -> None:
     seen_ids.add(person.id)
 
 
-def _build_director(raw: dict[str, Any], vp_id: str) -> Person:
+def _build_director(raw: dict[str, Any], parent_id: str) -> Person:
     handle = _normalize_handle(raw)
     name = (raw.get("name") or handle or "").strip()
     if not name:
@@ -142,13 +178,14 @@ def _build_director(raw: dict[str, Any], vp_id: str) -> Person:
         name=name,
         level=normalize_level(raw.get("level")) if handle else None,
         role=normalize_role(raw.get("role")) if handle else None,
-        manager=vp_id,
+        manager=parent_id,
         director=own_id,
+        description=_description(raw),
         is_director=True,
     )
 
 
-def _build_manager(raw: dict[str, Any], director_id: str) -> Person:
+def _build_manager(raw: dict[str, Any], parent_id: str, director_id: str | None) -> Person:
     handle = _normalize_handle(raw)
     name = (raw.get("name") or handle or "").strip()
     if not name:
@@ -160,8 +197,9 @@ def _build_manager(raw: dict[str, Any], director_id: str) -> Person:
         name=name,
         level=normalize_level(raw.get("level")) if handle else None,
         role=normalize_role(raw.get("role")) if handle else None,
-        manager=director_id,
+        manager=parent_id,
         director=director_id,
+        description=_description(raw),
         is_manager=True,
     )
 
@@ -179,4 +217,5 @@ def _build_employee(raw: dict[str, Any], manager_id: str | None, director_id: st
         role=normalize_role(raw.get("role")) if handle else None,
         manager=manager_id,
         director=director_id,
+        description=_description(raw),
     )

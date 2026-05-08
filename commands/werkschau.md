@@ -113,15 +113,25 @@ Pick the first that applies:
 
    For each, ask the level/role pair using the **IC-track level** options below.
 
-   **2.7. For each director with a GitHub handle:**
+   **2.7. For each director with a GitHub handle, recursively gather their subtree.**
 
-   **2.7a. Direct ICs reporting to the director (skip-level under that director).**
+   The schema supports arbitrary depth (Senior Director → Director → Manager → IC, or deeper). At each director node, ask about *all three* possible kinds of report:
+
+   **2.7a. Direct ICs reporting to this director (skip-level under that director).**
 
    Ask conversationally: *"Are there any ICs reporting directly to `<director>` (no manager between them)? `handle:Full Name`, one per line. Type `none`."*
 
    For each, ask level/role with the **IC-track level** options.
 
-   **2.7b. Managers reporting to the director.**
+   **2.7b. Sub-directors reporting to this director.**
+
+   Ask conversationally: *"Are there any directors reporting to `<director>` (e.g. they're a Senior Director with directors below them)? `handle:Full Name`, one per line. Type `none`."*
+
+   For each parsed sub-director with a GitHub handle, ask the level/role pair using the **director-track level** options from 2.5. Then **recurse** back into step 2.7 with this sub-director as the new "director" — gather their direct ICs, their sub-directors, and their managers.
+
+   The recursion ends when a director node has no further `directors` of their own, only `managers` and direct-IC `employees`.
+
+   **2.7c. Managers reporting to this director.**
 
    Ask conversationally: *"Who reports to `<director>` as managers? `handle:Full Name`, one per line. Type `none`."*
 
@@ -157,26 +167,38 @@ Pick the first that applies:
 
    If a typed value can't be normalized, re-ask just that field.
 
-   **2.7.** Build the org JSON tree in memory matching the schema in `${CLAUDE_PLUGIN_ROOT}/org.example.json`.
+   **2.9. Optional: collect per-person ownership descriptions.**
+
+   Once every person has a level + role, ask the user once (conversationally — no AskUserQuestion):
+
+   *"Optional but very helpful for the Breakdown narratives: give a one-sentence description of what each person owns or focuses on. Format: `handle: short description`, one per line. Skip anyone you want to leave blank. Type `none` or just hit enter to skip this entirely."*
+
+   For non-GitHub people, accept `Full Name: description` as well. Match against the names already collected.
+
+   These descriptions are passed to the brief writer as ground truth so it can disambiguate which subsystem a commit touches. Store them in the JSON under each person's `"description"` field.
+
+   **2.10.** Build the org JSON tree in memory matching the schema in `${CLAUDE_PLUGIN_ROOT}/org.example.json`. The schema supports nested directors — an entry under `directors[]` may have its own `directors[]`, `managers[]`, and `employees[]` arrays.
 
    Print a compact tree preview to the user — for example:
 
    ```
    Jane Smith (vp · janevp)
-   └─ Alice Smith (principal swe · alice-dir)
-      ├─ Bob Manager (senior staff swe · bob-mgr)
-      │  ├─ carol (DE3 swe)
-      │  └─ dave (DE1 swe)
-      └─ Erin Manager (staff mle · erin-mgr)
-         └─ frank (senior mle)
+   └─ Sam Senior Director (l8 swe · sam-srdir) — owns Data Platform org
+      └─ Jane Director (l7 swe · jane-dir) — owns ingestion + warehouse track
+         ├─ Director-Direct IC (l5 swe · dir-direct-ic)
+         ├─ Alice Smith (l6 swe · alice-mgr) — manages API platform team
+         │  ├─ Alice Doe (l4 swe · alice) — owns auth subsystem
+         │  └─ Carol Lee (l3 swe · carol) — owns search service
+         └─ Erin Manager (l5 swe · erin-mgr)
+            └─ frank (l4 mle)
    ```
 
-   **2.8. AskUserQuestion** with header "Confirm" and question "Save this org structure?":
+   **2.11. AskUserQuestion** with header "Confirm" and question "Save this org structure?":
    - Option 1: "Yes, save to ~/.werkschau/org.json and run the report"
    - Option 2: "Save and stop (I want to verify the file before running)"
    - Option 3: "Edit and rebuild"
 
-   If option 3, loop back to 2.4 with the existing tree as the starting point.
+   If option 3, loop back to 2.5 with the existing tree as the starting point.
 
    If option 1 or 2: write the JSON to `~/.werkschau/org.json` via the `Write` tool. If option 1, continue to Step 3. If option 2, tell the user to run `/werkschau` again when ready. **Stop here.**
 
@@ -271,29 +293,50 @@ Skip diff-fetching entirely for users with `commit_count == 0`.
 
 ## Step 8: Write per-person briefs
 
-For each scored person (every non-VP — directors, managers, ICs, all of them), write a 2 to 5 sentence narrative paragraph grounded in their commits + sampled diffs.
+For each scored person (every non-VP — directors, managers, ICs, all of them), write a SHORT, scannable brief grounded in their commits + sampled diffs and the person's `description` from `org.json`.
+
+**The output format is rigid markdown:**
+
+```
+<one summary sentence, <= 25 words>
+
+- **<Initiative or subsystem name>**: <one specific sentence, <= 25 words>
+- **<Initiative or subsystem name>**: <one specific sentence, <= 25 words>
+```
+
+Up to **four** bullets. Most weeks have 1–3. Skip bullets entirely if there's nothing material.
 
 **Format rules (strict):**
 
-- Be specific. Name what they built or changed, not how they felt about it.
-  *"Added a search/commits fallback so discovery works in all-private orgs"* is right.
-  *"Improved discovery"* is wrong.
-- Cite actual subsystem, file path, function name, or commit-message phrase when the diff supports it. If the data doesn't support specificity, hedge ("touched the X module") rather than invent.
-- Note temporal patterns only when load-bearing (a Friday-night burst, weekend release, single-afternoon focused session). Don't list every weekday.
-- For Senior+ ICs, managers, directors: if commit volume is low, note that this is expected and most of their week likely lives outside commits (review, design, mentorship). Do not read low volume as a red flag.
-- For Data Scientists, ML Engineers, Data Analysts: low commit volume is normal — much of their week is in notebooks, BI tools, or dashboards that don't commit.
-- If `commit_count == 0`: write `"No commit-visible activity this week."` plus one short sentence noting that's normal for their role/level.
-- Never emit a thumbs-up/thumbs-down. No "great work" / "needs improvement". Describe what the commits show; the reader decides.
+- Each bullet starts with the initiative or subsystem name in `**bold**` followed by a colon and ONE specific sentence. Name actual subsystems, files (`src/auth/tokens.py`), functions, services, or commit-message phrases.
+- *"Added a search/commits fallback so discovery works in all-private orgs"* is right. *"Improved discovery"* is wrong.
+- If the diff data doesn't support specificity, hedge ("touched the auth module") rather than invent.
+- **Use the person's `description` field as ground truth** for what they own. If Alice's description says "Owns the auth subsystem" and her commits touch `src/auth/`, anchor the bullet to that. Don't restate the description verbatim.
+- Roll dependabot bumps, README touch-ups, lockfile-only commits, and version pins into a single `**Maintenance**` bullet at most. Don't list every minor commit.
+- For Senior+ ICs / managers / directors: if commit volume is low, note in the **summary line** that the leverage lives outside commits (review, design, mentorship). Skip the bullets.
+- For Data Scientists, ML Engineers, Data Analysts: low commit volume is normal because most work is in notebooks, BI tools, or dashboards that don't commit.
+- If `commit_count == 0`: write only the summary line, no bullets. Phrase: `"No commit-visible activity this week. <one short clause on why this is normal for the role/level>."`
+- Never emit a thumbs-up/thumbs-down rating. Describe what the commits show; the reader decides.
 - Never invent commit content the diffs don't support.
-- Output is plain prose — no bullets, no markdown, no headers, no code fences.
+- No headers. No code fences. No preamble. No closing recap after the bullets.
 
-Build a JSON object mapping handle → narrative paragraph and write it to `/tmp/werkschau-narratives-${TMPID}.json`:
+**Example brief** (Alice, L4 SWE, owns auth subsystem):
+
+```
+Three threads of auth work this week, anchored on a token-rotation rewrite.
+
+- **Token rotation**: rewrote refresh-token TTL handling in `src/auth/tokens.py`, swapping the cron sweep for event-driven invalidation.
+- **Search**: scoped the new Postgres FTS index for the search service.
+- **Maintenance**: lockfile bumps and a CI matrix update.
+```
+
+Build a JSON object mapping handle → markdown brief and write it to `/tmp/werkschau-narratives-${TMPID}.json`:
 
 ```json
 {
-  "alice": "Lead engineer on...",
-  "carol": "Continued the platform/api authorization-layer work...",
-  "...": "..."
+  "alice": "Three threads of auth work...\n\n- **Token rotation**: ...\n- **Search**: ...",
+  "carol": "Search-service hardening week.\n\n- **Query builder**: ...",
+  "eve": "No commit-visible activity this week. L2 onboarding ICs typically pair-program rather than commit solo."
 }
 ```
 

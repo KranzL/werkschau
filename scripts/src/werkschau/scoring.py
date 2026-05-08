@@ -17,6 +17,8 @@ WORK_CATEGORIES: tuple[str, ...] = (
     "Documentation",
 )
 
+NEUTRAL_BASELINE_MINUTES: float = 600.0
+
 
 @dataclass(frozen=True)
 class Scores:
@@ -31,13 +33,7 @@ class Scores:
 def score_user(user_payload: dict, level: str | None, role: str | None, window_days: int) -> Scores:
     commits = user_payload.get("commits", []) or []
     weighted = sum(_complexity_weighted_effort(c) for c in commits)
-    base = baseline_minutes(role, level)
-    if base is None or base <= 0:
-        output = 0.0
-    else:
-        scaled_base = base * (window_days / 7.0)
-        output = _clip(_log2(weighted, scaled_base), -1.0, 1.0)
-
+    output = _output_score(weighted, window_days)
     focus = _focus_score(commits)
     label = _dominant_work_label(commits)
     return Scores(
@@ -48,6 +44,13 @@ def score_user(user_payload: dict, level: str | None, role: str | None, window_d
         commit_count=len(commits),
         repo_count=len({c.get("repo") for c in commits if c.get("repo")}),
     )
+
+
+def _output_score(weighted: float, window_days: int) -> float:
+    if weighted <= 0:
+        return -1.0
+    scaled_base = NEUTRAL_BASELINE_MINUTES * (window_days / 7.0)
+    return _clip(math.log2(weighted / scaled_base), -1.0, 1.0)
 
 
 def _complexity_weighted_effort(commit: dict) -> float:

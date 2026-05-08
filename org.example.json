@@ -2,52 +2,80 @@
   "vp": {
     "github": "janevp",
     "name": "Jane VP",
+    "description": "Engineering org leadership. Not scored.",
     "employees": [
-      {"github": "vp-direct-ic", "name": "VP-Direct IC", "level": "l5", "role": "swe"}
+      {
+        "github": "vp-direct-ic",
+        "name": "VP-Direct IC",
+        "level": "l5",
+        "role": "swe",
+        "description": "Cross-team platform projects reporting directly to the VP."
+      }
     ]
   },
   "directors": [
     {
-      "github": "jane-dir",
-      "name": "Jane Director",
-      "level": "l7",
+      "github": "sam-srdir",
+      "name": "Sam Senior Director",
+      "level": "l8",
       "role": "swe",
-      "employees": [
-        {"github": "dir-direct-ic", "name": "Director-Direct IC", "level": "l5", "role": "swe"}
+      "description": "Owns Data Platform org. Strategy, headcount, cross-team alignment.",
+      "directors": [
+        {
+          "github": "jane-dir",
+          "name": "Jane Director",
+          "level": "l7",
+          "role": "swe",
+          "description": "Owns the ingestion and data-warehouse track within Data Platform.",
+          "employees": [
+            {
+              "github": "dir-direct-ic",
+              "name": "Director-Direct IC",
+              "level": "l5",
+              "role": "swe",
+              "description": "Embedded staff IC working across all of Jane's teams."
+            }
+          ],
+          "managers": [
+            {
+              "github": "alice-mgr",
+              "name": "Alice Smith",
+              "level": "l6",
+              "role": "swe",
+              "description": "Manager of the API platform team. Owns auth, search, and the core REST surface.",
+              "employees": [
+                {"github": "alice", "name": "Alice Doe",    "level": "l4", "role": "swe", "description": "Owns the auth subsystem and session-token rotation."},
+                {"github": "carol", "name": "Carol Lee",    "level": "l3", "role": "swe", "description": "Owns the search service and the query-builder layer."},
+                {"github": "eve",   "name": "Eve Martinez", "level": "l2", "role": "swe", "description": "Working through the API onboarding curriculum on the billing endpoints."},
+                {"github": "ian",   "name": "Ian Park",     "level": "l4", "role": "ds",  "description": "Pricing experiments and uplift modeling for billing."}
+              ]
+            },
+            {
+              "github": "erin-mgr",
+              "name": "Erin Brown",
+              "level": "l5",
+              "role": "swe",
+              "description": "Manager of the ingestion team. Owns Kafka topics, the warehouse loaders, and dbt.",
+              "employees": [
+                {"github": "bob",   "name": "Bob Clark",   "level": "l6", "role": "swe", "description": "Principal IC on ingestion. Owns the Kafka -> Snowflake bridge."},
+                {"github": "hank",  "name": "Hank Reed",   "level": "l1", "role": "swe", "description": "New grad. Pairing with Bob on the Snowflake loader."},
+                {"github": "frank", "name": "Frank Yates", "level": "l4", "role": "mle", "description": "ML feature pipelines built on the warehouse."}
+              ]
+            }
+          ]
+        }
       ],
       "managers": [
-        {
-          "github": "alice-mgr",
-          "name": "Alice Smith",
-          "level": "l6",
-          "role": "swe",
-          "employees": [
-            {"github": "alice", "name": "Alice Doe",    "level": "l4", "role": "swe"},
-            {"github": "carol", "name": "Carol Lee",    "level": "l3", "role": "swe"},
-            {"github": "eve",   "name": "Eve Martinez", "level": "l2", "role": "swe"},
-            {"github": "ian",   "name": "Ian Park",     "level": "l4", "role": "ds"}
-          ]
-        },
-        {
-          "github": "erin-mgr",
-          "name": "Erin Brown",
-          "level": "l5",
-          "role": "swe",
-          "employees": [
-            {"github": "bob",   "name": "Bob Clark",   "level": "l6", "role": "swe"},
-            {"github": "hank",  "name": "Hank Reed",   "level": "l1", "role": "swe"},
-            {"github": "frank", "name": "Frank Yates", "level": "l4", "role": "mle"}
-          ]
-        },
         {
           "github": "ivy-mgr",
           "name": "Ivy Yu",
           "level": "l6",
           "role": "mle",
+          "description": "Manager of analytics + ML platform. Reports directly into Sam.",
           "employees": [
-            {"github": "jane",  "name": "Jane Singh",   "level": "l5", "role": "ae"},
-            {"github": "dave",  "name": "Dave Hill",    "level": "l1", "role": "da"},
-            {"github": "grace", "name": "Grace Carter", "level": "l2", "role": "da"}
+            {"github": "jane",  "name": "Jane Singh",   "level": "l5", "role": "ae", "description": "Owns the dbt models powering exec dashboards."},
+            {"github": "dave",  "name": "Dave Hill",    "level": "l1", "role": "da", "description": "Junior analyst. Mostly Looker dashboards."},
+            {"github": "grace", "name": "Grace Carter", "level": "l2", "role": "da", "description": "Marketing analytics."}
           ]
         }
       ]
