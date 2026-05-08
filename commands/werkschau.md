@@ -82,21 +82,37 @@ Pick the first that applies:
 
    **2.4.** Ask conversationally for the directors. Use this exact prompt:
 
-   *"List the directors reporting to `<VP>`. One per line, format: `handle:level:role:Full Name`*
-   *Levels: `de1, de2, de3, senior, staff, senior staff, principal, senior principal, distinguished`*
-   *Roles: `swe, ae, mle, ds, da`*
-   *Example: `alice-dir:principal:swe:Alice Smith`*
-   *Type `none` if there are no directors."*
+   *"List the directors reporting to `<VP>`. One per line, format: `handle:Full Name`. Example: `alice-dir:Alice Smith`. Type `none` if there are no directors."*
 
-   Parse each line. For each, validate the GitHub handle via `gh api /users/<handle>`, validate the level is in the LEVELS list, validate the role is in the ROLES list. If any line is invalid, surface the specific error and ask the user to fix that line.
+   Parse each line. For each director, validate the GitHub handle via `gh api /users/<handle>`. If a handle is invalid, surface the error and ask the user to fix that line.
 
-   **2.5.** For each director, ask conversationally: *"Who reports to `<director>` as managers? Same format as before, one per line. Type `none` for no managers."*
+   For **each** director, ask their level and role via **AskUserQuestion** (one call with two questions):
 
-   Parse and validate as in 2.4.
+   - Question 1 — header `"Level"`, question `"Level for <Full Name> (<handle>)?"`. Options:
+     - `"Senior"` — desc: "6-10 yrs, owns areas, drives reviews"
+     - `"Staff"` — desc: "Cross-team RFCs, mentorship, hiring"
+     - `"Principal"` — desc: "Org-wide tech strategy, low commit volume by design"
+     - `"DE3"` — desc: "Senior IC track, pre-Senior"
+   - Question 2 — header `"Role"`, question `"Role for <Full Name> (<handle>)?"`. Options:
+     - `"SWE"` — desc: "Software Engineer"
+     - `"AE"` — desc: "Analytics Engineer"
+     - `"MLE"` — desc: "ML Engineer"
+     - `"DS"` — desc: "Data Scientist"
 
-   **2.6.** For each manager (and any director who has no managers), ask: *"Who reports to `<leader>` as employees? Same format, one per line. Type `none` for no employees."*
+   The auto-added **Other** captures anything outside the four explicit options (DE1, DE2, Senior Staff, Senior Principal, Distinguished, or DA). For "Other" responses, normalize the user's typed value against the canonical lists:
 
-   Parse and validate.
+   - Levels: `de1, de2, de3, senior, staff, senior staff, principal, senior principal, distinguished`
+   - Roles: `swe, ae, mle, ds, da`
+
+   If you can't normalize a response, surface the error and re-ask just that field.
+
+   **2.5.** For each director, ask conversationally: *"Who reports to `<director>` as managers? `handle:Full Name`, one per line. Type `none` for no managers."*
+
+   Parse and validate handles. Then for **each** manager, run the same level+role **AskUserQuestion** call from 2.4.
+
+   **2.6.** For each manager (and any director who has no managers), ask: *"Who reports to `<leader>` as employees? `handle:Full Name`, one per line. Type `none` for no employees."*
+
+   Parse and validate handles. Then for **each** employee, run the same level+role **AskUserQuestion** call from 2.4.
 
    **2.7.** Build the org JSON tree in memory matching the schema in `${CLAUDE_PLUGIN_ROOT}/org.example.json`.
 
