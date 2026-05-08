@@ -8,6 +8,9 @@ from .org import Org, Person
 from .scoring import Initiative, Scores, median
 
 
+NOT_LOCKED_THRESHOLD: float = -0.6
+
+
 @dataclass
 class UserBlock:
     person: Person
@@ -69,12 +72,17 @@ def _render_nameplate_meta(issue_number: int, until_human: str) -> str:
     )
 
 
+def _is_not_locked(b: UserBlock) -> bool:
+    return (
+        b.scores.output <= NOT_LOCKED_THRESHOLD
+        and b.scores.focus <= NOT_LOCKED_THRESHOLD
+        and not b.person.is_director
+    )
+
+
 def _classify_callouts(blocks: list[UserBlock]) -> tuple[list[UserBlock], list[UserBlock]]:
     locked = [b for b in blocks if b.scores.output > 0 and b.scores.focus > 0]
-    not_locked = [
-        b for b in blocks
-        if b.scores.output < 0 and b.scores.focus < 0 and not b.person.is_director
-    ]
+    not_locked = [b for b in blocks if _is_not_locked(b)]
     locked.sort(key=lambda b: (b.scores.output + b.scores.focus), reverse=True)
     not_locked.sort(key=lambda b: (b.scores.output + b.scores.focus))
     return locked, not_locked
@@ -158,7 +166,7 @@ def _render_chart_svg(blocks: list[UserBlock]) -> str:
         elif b.scores.output > 0 and b.scores.focus > 0:
             stroke, fill = "#1a7c36", "#1a7c36"
             text_weight, text_fill = "600", "#121212"
-        elif b.scores.output < 0 and b.scores.focus < 0:
+        elif _is_not_locked(b):
             stroke, fill = "#c4192c", "#c4192c"
             text_weight, text_fill = "600", "#121212"
         else:
@@ -223,7 +231,7 @@ def _render_mini_chart_svg(blocks: list[UserBlock]) -> str:
         elif b.scores.output > 0 and b.scores.focus > 0:
             stroke, fill = "#1a7c36", "#1a7c36"
             label_fill, label_weight = "#121212", "600"
-        elif b.scores.output < 0 and b.scores.focus < 0:
+        elif _is_not_locked(b):
             stroke, fill = "#c4192c", "#c4192c"
             label_fill, label_weight = "#121212", "600"
         else:
@@ -256,7 +264,7 @@ def _render_mini_chart_svg(blocks: list[UserBlock]) -> str:
     return f'''<svg viewBox="0 0 480 380" width="100%" style="max-width: 480px; display: block; margin: 12px 0 18px;" xmlns="http://www.w3.org/2000/svg">
   <rect x="70" y="50" width="360" height="260" fill="#ffffff"/>
   <rect x="250" y="50" width="180" height="130" fill="#1a7c36" fill-opacity="0.07"/>
-  <rect x="70" y="180" width="180" height="130" fill="#c4192c" fill-opacity="0.06"/>
+  <rect x="70" y="258" width="72" height="52"  fill="#c4192c" fill-opacity="0.20"/>
   <line x1="250" y1="50" x2="250" y2="310" stroke="#999999" stroke-width="0.7" stroke-dasharray="3 3"/>
   <line x1="70" y1="180" x2="430" y2="180" stroke="#999999" stroke-width="0.7" stroke-dasharray="3 3"/>
   <rect x="70" y="50" width="360" height="260" fill="none" stroke="#121212" stroke-width="0.95"/>
@@ -304,7 +312,7 @@ def _render_ledger(org: Org, by_id: dict) -> str:
             row_cls = "in-neg is-offgrid"
         elif b.scores.output > 0 and b.scores.focus > 0:
             row_cls = "in-pos"
-        elif b.scores.output < 0 and b.scores.focus < 0 and not b.person.is_director:
+        elif _is_not_locked(b):
             row_cls = "in-neg"
         else:
             row_cls = ""
@@ -581,7 +589,7 @@ _CHART_SVG_TEMPLATE = """<svg class="chart-svg" viewBox="0 0 540 460" xmlns="htt
   </defs>
   <rect x="80" y="60" width="400" height="300" fill="#ffffff"/>
   <rect x="280" y="60"  width="200" height="150" fill="#1a7c36" fill-opacity="0.07"/>
-  <rect x="80"  y="210" width="200" height="150" fill="#c4192c" fill-opacity="0.06"/>
+  <rect x="80"  y="300" width="80"  height="60"  fill="#c4192c" fill-opacity="0.20"/>
   <rect x="80" y="60" width="400" height="300" fill="url(#grid)"/>
   <line x1="280" y1="60" x2="280" y2="360" stroke="#999999" stroke-width="0.7" stroke-dasharray="3 3"/>
   <line x1="80" y1="210" x2="480" y2="210" stroke="#999999" stroke-width="0.7" stroke-dasharray="3 3"/>
