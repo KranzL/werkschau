@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -82,33 +83,65 @@ def _extract_for_user(
     max_repos: int,
     max_commits_per_repo: int,
     include_merges: bool,
+    prior_user: dict | None = None,
 ) -> dict:
-    click.echo(f"[{user}] discovering repos", err=True)
-    repos = discover_repos(user, since_dt, until_dt)
-    if not repos:
-        click.echo(f"[{user}] no authored commits found in window", err=True)
-    if len(repos) > max_repos:
-        click.echo(f"[{user}] found {len(repos)} repos; truncating to first {max_repos}", err=True)
-        repos = repos[:max_repos]
+    prior_commits_by_repo: dict[str, dict[str, dict]] = {}
+    latest_date_by_repo: dict[str, datetime] = {}
+    if prior_user:
+        for commit in prior_user.get("commits") or []:
+            repo = commit.get("repo")
+            sha = commit.get("sha")
+            if not repo or not sha:
+                continue
+            prior_commits_by_repo.setdefault(repo, {})[sha] = commit
+            iso = commit.get("committer_date_utc") or ""
+            if iso:
+                when = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+                if when.tzinfo is None:
+                    when = when.replace(tzinfo=timezone.utc)
+                if when > latest_date_by_repo.get(repo, datetime.min.replace(tzinfo=timezone.utc)):
+                    latest_date_by_repo[repo] = when
+
+    known_repos = sorted(prior_commits_by_repo.keys())
+    if known_repos:
+        click.echo(f"[{user}] using {len(known_repos)} known repos from prior pull", err=True)
+        repos = [tuple(r.split("/", 1)) for r in known_repos if "/" in r]
     else:
-        click.echo(f"[{user}] found {len(repos)} repos", err=True)
+        click.echo(f"[{user}] discovering repos", err=True)
+        repos = discover_repos(user, since_dt, until_dt)
+        if not repos:
+            click.echo(f"[{user}] no authored commits found in window", err=True)
+        if len(repos) > max_repos:
+            click.echo(f"[{user}] found {len(repos)} repos; truncating to first {max_repos}", err=True)
+            repos = repos[:max_repos]
+        else:
+            click.echo(f"[{user}] found {len(repos)} repos", err=True)
+
     out_commits: list[dict] = []
     repos_visited: list[str] = []
     for owner, repo in repos:
         full = f"{owner}/{repo}"
         click.echo(f"[{user}]   -> {full}", err=True)
         repos_visited.append(full)
+        repo_since = since_dt
+        latest = latest_date_by_repo.get(full)
+        if latest and latest > repo_since:
+            repo_since = latest
         try:
-            commits = extract_commits(owner, repo, user, since_dt, until_dt)
+            commits = extract_commits(owner, repo, user, repo_since, until_dt)
         except Exception as exc:
             click.echo(f"[{user}]      extract failed: {exc}", err=True)
             continue
         if len(commits) > max_commits_per_repo:
             click.echo(f"[{user}]      truncating {len(commits)} commits to {max_commits_per_repo}", err=True)
             commits = commits[:max_commits_per_repo]
+        skipped_merges = 0
         for commit in commits:
             sha = commit.get("sha")
             if not sha:
+                continue
+            if not include_merges and len(commit.get("parents") or []) > 1:
+                skipped_merges += 1
                 continue
             try:
                 detail = extract_commit_detail(owner, repo, sha)
@@ -120,6 +153,8 @@ def _extract_for_user(
                 continue
             features["repo"] = full
             out_commits.append(features)
+        if skipped_merges:
+            click.echo(f"[{user}]      skipped {skipped_merges} merge commits (saved API calls)", err=True)
     out_commits.sort(key=lambda c: c.get("committer_date_utc", ""), reverse=True)
     return {
         "user": user,
@@ -244,6 +279,7 @@ def extract(
 @click.option("--max-repos", default=50, show_default=True, type=int)
 @click.option("--max-commits-per-repo", default=200, show_default=True, type=int)
 @click.option("--include-merges/--no-merges", default=False, show_default=True)
+@click.option("--force-discover", is_flag=True, default=False, help="Re-run repo discovery even for users already in the store. Use when someone may have started contributing to brand-new repos since the last pull.")
 def pull(
     org_path: str,
     since: str,
@@ -252,6 +288,7 @@ def pull(
     max_repos: int,
     max_commits_per_repo: int,
     include_merges: bool,
+    force_discover: bool,
 ) -> None:
     from .org import load_org
 
@@ -272,10 +309,12 @@ def pull(
             click.echo(f"Store at {resolved_store} is malformed; rebuilding from scratch.", err=True)
             existing = {}
 
+    _log_rate_limit()
     click.echo(f"Pulling {since_dt.isoformat()} -> {until_dt.isoformat()}", err=True)
     members = [(p.github, p.level) for p in org.scored_people()]
     click.echo(f"Members: {len(members)}", err=True)
 
+    prior_by_user = {u.get("user"): u for u in existing.get("users", []) if u.get("user")}
     fresh_payloads = [
         _extract_for_user(
             user,
@@ -285,6 +324,7 @@ def pull(
             max_repos,
             max_commits_per_repo,
             include_merges,
+            prior_user=None if force_discover else prior_by_user.get(user),
         )
         for user, level in members
     ]
@@ -723,6 +763,7 @@ def backfill(
     resolved_store.parent.mkdir(parents=True, exist_ok=True)
 
     if not skip_pull:
+        _log_rate_limit()
         click.echo(f"Pulling commits for {oldest_start.date()} -> {newest_end.date()}", err=True)
         existing: dict = {}
         if resolved_store.exists():
@@ -731,10 +772,12 @@ def backfill(
             except json.JSONDecodeError:
                 existing = {}
         members = [(p.github, p.level) for p in org.scored_people()]
+        prior_by_user = {u.get("user"): u for u in existing.get("users", []) if u.get("user")}
         fresh_payloads = [
             _extract_for_user(
                 user, level, oldest_start, newest_end,
                 max_repos, max_commits_per_repo, include_merges,
+                prior_user=prior_by_user.get(user),
             )
             for user, level in members
         ]
@@ -823,6 +866,34 @@ def _prev_month_start(month_start: datetime) -> datetime:
     if month_start.month == 1:
         return datetime(month_start.year - 1, 12, 1, tzinfo=month_start.tzinfo)
     return datetime(month_start.year, month_start.month - 1, 1, tzinfo=month_start.tzinfo)
+
+
+def _log_rate_limit() -> None:
+    from .gh_api import rate_limit_status
+
+    resources = rate_limit_status()
+    if not resources:
+        return
+    core = resources.get("core") or {}
+    search = resources.get("search") or {}
+    core_rem = core.get("remaining")
+    core_lim = core.get("limit")
+    search_rem = search.get("remaining")
+    search_lim = search.get("limit")
+    if core_rem is not None:
+        marker = ""
+        if isinstance(core_rem, int) and isinstance(core_lim, int) and core_lim:
+            if core_rem < core_lim * 0.1:
+                marker = " (low — pull may pause for reset)"
+        reset = core.get("reset")
+        reset_str = ""
+        if reset:
+            mins = max(0, int(reset) - int(time.time())) // 60
+            reset_str = f", resets in ~{mins}m"
+        click.echo(
+            f"Rate budget: core {core_rem}/{core_lim}{reset_str}, search {search_rem}/{search_lim}{marker}",
+            err=True,
+        )
 
 
 def _slice_store(store_data: dict, since_dt: datetime, until_dt: datetime) -> dict:
