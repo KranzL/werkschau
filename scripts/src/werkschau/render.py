@@ -764,6 +764,112 @@ td.stack em { font-family: var(--serif); font-style: italic; color: var(--mute);
 }"""
 
 
+@dataclass
+class IndexEntry:
+    filename: str
+    month_label: str
+    since_iso: str
+    until_iso: str
+    contributor_count: int
+    locked_in_count: int
+    not_locked_in_count: int
+
+
+def render_index(
+    entries: list[IndexEntry],
+    org_name: str,
+    generated_iso: str,
+) -> str:
+    rows: list[str] = []
+    for entry in entries:
+        rows.append(
+            f'<li class="idx-row">'
+            f'<a class="idx-link" href="{_html(entry.filename)}">'
+            f'<span class="idx-month">{_html(entry.month_label)}</span>'
+            f'<span class="idx-range">{_html(_range_label(entry.since_iso, entry.until_iso))}</span>'
+            f'<span class="idx-stats">'
+            f'<span class="idx-stat"><b>{entry.contributor_count}</b> contributors</span>'
+            f'<span class="idx-stat pos"><b>{entry.locked_in_count}</b> locked in</span>'
+            f'<span class="idx-stat neg"><b>{entry.not_locked_in_count}</b> not locked in</span>'
+            f'</span>'
+            f'</a></li>'
+        )
+    generated_dt = datetime.fromisoformat(generated_iso.replace("Z", "+00:00"))
+    generated_human = generated_dt.strftime("%B %-d, %Y")
+    return _INDEX_PAGE.format(
+        css=_CSS + _INDEX_CSS,
+        org_name=_html(org_name),
+        generated=_html(generated_human),
+        rows="\n".join(rows),
+        report_count=len(entries),
+    )
+
+
+def _range_label(since_iso: str, until_iso: str) -> str:
+    s = datetime.fromisoformat(since_iso.replace("Z", "+00:00"))
+    u = datetime.fromisoformat(until_iso.replace("Z", "+00:00"))
+    return f"{s.strftime('%b %-d')} – {u.strftime('%b %-d, %Y')}"
+
+
+_INDEX_CSS = """
+.idx-list { list-style: none; padding: 0; margin: 32px 0; border-top: 1px solid var(--ink); }
+.idx-row { border-bottom: 1px solid var(--rule); }
+.idx-link {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr 2fr;
+  gap: 16px;
+  align-items: baseline;
+  padding: 18px 4px;
+  text-decoration: none;
+  color: var(--ink);
+}
+.idx-link:hover { background: var(--paper-deep); }
+.idx-month { font-family: var(--serif); font-size: 26px; font-weight: 600; letter-spacing: -0.01em; }
+.idx-range { font-family: var(--serif); font-style: italic; font-size: 14px; color: var(--mute); }
+.idx-stats { display: flex; gap: 18px; justify-content: flex-end; font-family: var(--sans); font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; }
+.idx-stat b { font-family: var(--sans); font-size: 16px; font-weight: 700; margin-right: 4px; letter-spacing: 0; text-transform: none; }
+.idx-stat.pos b { color: var(--pos); }
+.idx-stat.neg b { color: var(--neg); }
+@media (max-width: 700px) {
+  .idx-link { grid-template-columns: 1fr; gap: 4px; }
+  .idx-stats { justify-content: flex-start; flex-wrap: wrap; }
+}
+"""
+
+
+_INDEX_PAGE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Werkschau · Monthly Index</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=UnifrakturCook:wght@700&family=Source+Serif+Pro:ital,wght@0,400;0,600;0,700;1,400;1,600&display=swap" rel="stylesheet">
+<style>{css}</style>
+</head>
+<body>
+<main>
+  <div class="nameplate">
+    <h1 class="nameplate-name">Werkschau</h1>
+    <div class="nameplate-meta">
+      <span>Monthly Archive</span><span class="sep">·</span>
+      <span>{org_name}</span><span class="sep">·</span>
+      <span>Generated {generated}</span>
+    </div>
+  </div>
+
+  <header class="mast">
+    <h2 class="mast-title">Monthly retrospective archive.</h2>
+    <p class="mast-dek">{report_count} complete calendar months of engineering activity. Select a month to read its full report.</p>
+  </header>
+
+  <ul class="idx-list">{rows}</ul>
+</main>
+</body>
+</html>"""
+
+
 _PAGE = """<!DOCTYPE html>
 <html lang="en">
 <head>

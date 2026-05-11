@@ -19,10 +19,13 @@ This slash command uses your `gh` auth for GitHub and Claude (this conversation)
 **Argument parsing.** Before doing anything else, parse `$ARGUMENTS` (the user's text after `/werkschau`) for these flags. Treat them as optional:
 
 - `--org <path>` — explicit path to org.json
-- `--since <window>` — e.g. `7d`, `14d`, `30d`, or ISO8601
-- `--issue <N>` — issue number for the nameplate
+- `--since <window>` — e.g. `7d`, `14d`, `30d`, or ISO8601 (ignored if `--backfill` is set)
+- `--issue <N>` — issue number for the nameplate (used as starting issue when `--backfill` is set)
+- `--backfill <N>` — produce one report per complete calendar month for the last N months, with an index.html. Skip the per-week flow.
 
 Anything not passed will be asked or defaulted in the steps below.
+
+If `--backfill <N>` is set, after Step 1 (verify setup) and Step 2 (resolve org.json), jump to the **Backfill flow** section at the bottom of this document. Steps 3–10 are the weekly cadence.
 
 ## Step 1: Verify setup
 
@@ -430,3 +433,100 @@ Or with Anthropic:
 WERKSCHAU_ANTHROPIC_API_KEY=<key> \
 werkschau report-org --org ~/.werkschau/org.json --since 7d --output report.html
 ```
+
+## Backfill flow (when `--backfill N` is set)
+
+Generates one HTML per complete calendar month for the last `N` months, plus an `index.html` linking them. The data is pulled from GitHub **once** into a local store; every subsequent slice is offline.
+
+**Honest UX note**: you will write briefs for `N` months in this one conversation. A 6-month backfill ≈ 6× the brief-writing work of a weekly run. The narratives cache makes a resumed run free for months already written.
+
+### B1: Resolve output directory
+
+```bash
+BACKFILL_DIR="$PWD/werkschau-backfill-$(date +%Y-%m-%d)"
+mkdir -p "$BACKFILL_DIR"
+```
+
+### B2: Pull the wide window into the store
+
+```bash
+${CLAUDE_PLUGIN_ROOT}/.venv/bin/werkschau pull \
+  --org <ORG_PATH> \
+  --since ${N}m
+```
+
+This writes to `~/.werkschau/store.json`. Idempotent — if the store already covers the range, the diff cache makes re-pulling near-instant.
+
+### B3: Compute month boundaries
+
+Compute the last N complete calendar months (excluding the partial current month). For each month you'll loop steps B4–B7.
+
+Use bash `date` to derive boundaries. Example for the loop variable `M` ranging over `1..N`, with `1` = oldest:
+
+```bash
+CURRENT_MONTH_START=$(date -v1d +%Y-%m-01 2>/dev/null || date -d "$(date +%Y-%m-01)" +%Y-%m-%d)
+```
+
+For each month index `i` from `N` down to `1`:
+
+```bash
+MONTH_START=$(date -v-${i}m -v1d +%Y-%m-01 2>/dev/null || date -d "${i} months ago $(date +%Y-%m-01)" +%Y-%m-01)
+MONTH_END=$(date -v-$((i-1))m -v1d +%Y-%m-01 2>/dev/null || date -d "$((i-1)) months ago $(date +%Y-%m-01)" +%Y-%m-01)
+MONTH_LABEL=$(date -j -f "%Y-%m-%d" "$MONTH_START" "+%Y-%m" 2>/dev/null || date -d "$MONTH_START" +%Y-%m)
+```
+
+The month files are named `werkschau-YYYY-MM.html` and `narratives-YYYY-MM.json`.
+
+### B4: Slice the store for this month
+
+```bash
+${CLAUDE_PLUGIN_ROOT}/.venv/bin/werkschau slice \
+  --since "$MONTH_START" \
+  --until "$MONTH_END" \
+  --output "$BACKFILL_DIR/extract-$MONTH_LABEL.json"
+```
+
+### B5: Check narrative cache for this month
+
+If `$BACKFILL_DIR/narratives-$MONTH_LABEL.json` already exists, **AskUserQuestion** once (the answer applies to every cached month found): "Reuse cached narratives for already-written months, or rewrite from scratch?".
+
+If reusing, skip B6 for this month and go to B7.
+
+### B6: Write briefs for this month
+
+Same flow as Steps 7–8 of the weekly run, but scoped to this month:
+
+1. Read `$BACKFILL_DIR/extract-$MONTH_LABEL.json`.
+2. For each user with `commit_count > 0`, fetch sample diffs via `gh api /repos/<owner>/<repo>/commits/<sha>` (same cap: 3 commits, ~1500 char patches, up to 8 files). The diff cache at `~/.cache/werkschau/diffs/` makes repeated fetches free.
+3. Cluster each user's commits into initiatives using the 48-hour + scope/token/dir heuristic from Step 7b.
+4. Write a brief per user with the same format rules from Step 8.
+5. Save the `{handle: brief}` map to `$BACKFILL_DIR/narratives-$MONTH_LABEL.json` via the `Write` tool.
+
+### B7: Render this month
+
+```bash
+${CLAUDE_PLUGIN_ROOT}/.venv/bin/werkschau report-org \
+  --org <ORG_PATH> \
+  --extract "$BACKFILL_DIR/extract-$MONTH_LABEL.json" \
+  --narratives "$BACKFILL_DIR/narratives-$MONTH_LABEL.json" \
+  --since "$MONTH_START" \
+  --until "$MONTH_END" \
+  --issue $((<ISSUE_START> + N - i)) \
+  --output "$BACKFILL_DIR/werkschau-$MONTH_LABEL.html"
+```
+
+`<ISSUE_START>` defaults to 1. The oldest month gets `<ISSUE_START>`, the next gets `<ISSUE_START>+1`, etc.
+
+### B8: Render the index
+
+After the loop completes:
+
+```bash
+${CLAUDE_PLUGIN_ROOT}/.venv/bin/werkschau render-index \
+  --org <ORG_PATH> \
+  --dir "$BACKFILL_DIR"
+```
+
+### B9: Confirm
+
+Tell the user the path to `$BACKFILL_DIR/index.html`. List how many monthly reports landed. Mention that the store at `~/.werkschau/store.json` now contains the full window — re-running the backfill (or a weekly `/werkschau`) will reuse it.
