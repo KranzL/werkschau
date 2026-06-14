@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import math
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -8,7 +9,70 @@ from .org import Org, Person
 from .scoring import Initiative, Scores, median
 
 
-NOT_LOCKED_THRESHOLD: float = -0.6
+def _spread_positions(
+    items: list[tuple[float, float, object]],
+    min_distance: float,
+    max_iterations: int = 36,
+) -> list[tuple[float, float, object]]:
+    placed: list[tuple[float, float]] = []
+    out: list[tuple[float, float, object]] = []
+    md_sq = min_distance * min_distance
+    for x, y, item in items:
+        nx, ny = x, y
+        if any((nx - px) ** 2 + (ny - py) ** 2 < md_sq for px, py in placed):
+            step = min_distance * 0.6
+            for i in range(1, max_iterations + 1):
+                angle = i * 137.5 * math.pi / 180.0
+                radius = step * math.sqrt(i)
+                cx = x + radius * math.cos(angle)
+                cy = y + radius * math.sin(angle)
+                if not any((cx - px) ** 2 + (cy - py) ** 2 < md_sq for px, py in placed):
+                    nx, ny = cx, cy
+                    break
+        placed.append((nx, ny))
+        out.append((nx, ny, item))
+    return out
+
+
+def _label_offset(x: float, y: float, placed_labels: list[tuple[float, float, float, float]], horizon: float = 380.0) -> tuple[float, float, str]:
+    dys = [4, -8, 16, -16, 24, -22, 32, -28]
+    if x > horizon:
+        candidates = []
+        for dy in dys:
+            candidates.append((x - 9, y + dy, "end"))
+        for dy in dys:
+            candidates.append((x + 9, y + dy, "start"))
+    else:
+        candidates = []
+        for dy in dys:
+            candidates.append((x + 9, y + dy, "start"))
+        for dy in dys:
+            candidates.append((x - 9, y + dy, "end"))
+    label_height = 11.0
+    label_width = 60.0
+    for cx, cy, anchor in candidates:
+        if anchor == "start":
+            left, right = cx, cx + label_width
+        else:
+            left, right = cx - label_width, cx
+        top = cy - label_height
+        bottom = cy + 2
+        collide = any(
+            not (right < l or left > r or bottom < t or top > b)
+            for l, t, r, b in placed_labels
+        )
+        if not collide:
+            if anchor == "start":
+                placed_labels.append((cx, top, cx + label_width, bottom))
+            else:
+                placed_labels.append((cx - label_width, top, cx, bottom))
+            return cx, cy, anchor
+    cx, cy, anchor = candidates[0]
+    if anchor == "start":
+        placed_labels.append((cx, cy - label_height, cx + label_width, cy + 2))
+    else:
+        placed_labels.append((cx - label_width, cy - label_height, cx, cy + 2))
+    return cx, cy, anchor
 
 
 @dataclass
@@ -27,13 +91,13 @@ def render_html(
     skip_briefs: bool = False,
 ) -> str:
     by_id = {b.person.id: b for b in blocks}
-    locked_in, not_locked_in = _classify_callouts(blocks)
-    headline_dek = _headline_dek(blocks, locked_in, not_locked_in)
+    locked_in, inactive = _classify_callouts(blocks)
+    headline_dek = _headline_dek(blocks, locked_in, inactive)
     until_dt = datetime.fromisoformat(until_iso.replace("Z", "+00:00"))
     until_human = until_dt.strftime("%A, %B %-d, %Y") if hasattr(until_dt, "strftime") else until_iso
     until_short = until_dt.strftime("%B %-d, %Y") if hasattr(until_dt, "strftime") else until_iso
 
-    callouts_html = _render_callouts(locked_in, not_locked_in)
+    callouts_html = _render_callouts(locked_in, inactive)
     chart_html = _render_chart_svg(blocks)
     rollup_html = _render_rollup(org, by_id)
     ledger_html = _render_ledger(org, by_id)
@@ -72,42 +136,60 @@ def _render_nameplate_meta(issue_number: int, until_human: str) -> str:
     )
 
 
-def _is_not_locked(b: UserBlock) -> bool:
+_INACTIVE_QUADRANT_THRESHOLD: float = -0.6
+
+
+def _is_inactive_for_callout(b: UserBlock) -> bool:
+    if b.person.github is None:
+        return False
+    if b.person.is_director:
+        return False
+    return b.scores.inactive
+
+
+def _is_locked_in(b: UserBlock) -> bool:
+    return b.scores.output > 0 and b.scores.substance > 0
+
+
+def _is_in_inactive_quadrant(b: UserBlock) -> bool:
+    if b.person.github is None:
+        return False
+    if b.person.is_director:
+        return False
     return (
-        b.scores.output <= NOT_LOCKED_THRESHOLD
-        and b.scores.focus <= NOT_LOCKED_THRESHOLD
-        and not b.person.is_director
+        b.scores.output <= _INACTIVE_QUADRANT_THRESHOLD
+        and b.scores.substance <= _INACTIVE_QUADRANT_THRESHOLD
     )
 
 
 def _classify_callouts(blocks: list[UserBlock]) -> tuple[list[UserBlock], list[UserBlock]]:
-    locked = [b for b in blocks if b.scores.output > 0 and b.scores.focus > 0]
-    not_locked = [b for b in blocks if _is_not_locked(b)]
-    locked.sort(key=lambda b: (b.scores.output + b.scores.focus), reverse=True)
-    not_locked.sort(key=lambda b: (b.scores.output + b.scores.focus))
-    return locked, not_locked
+    locked = [b for b in blocks if _is_locked_in(b)]
+    inactive = [b for b in blocks if _is_inactive_for_callout(b)]
+    locked.sort(key=lambda b: (b.scores.output + b.scores.substance), reverse=True)
+    inactive.sort(key=lambda b: b.scores.substantive_minutes)
+    return locked, inactive
 
 
-def _headline_dek(blocks: list[UserBlock], locked: list[UserBlock], not_locked: list[UserBlock]) -> str:
+def _headline_dek(blocks: list[UserBlock], locked: list[UserBlock], inactive: list[UserBlock]) -> str:
     n_locked = len(locked)
-    n_not = len(not_locked)
+    n_inactive = len(inactive)
     n_total = len(blocks)
-    n_middle = n_total - n_locked - n_not
+    n_middle = n_total - n_locked - n_inactive
 
     def number_word(n: int) -> str:
         return ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"][n] if n < 11 else str(n)
 
     parts: list[str] = []
     if n_locked == 1:
-        parts.append("One contributor is running ahead of pace this week.")
+        parts.append("One contributor is shipping substantive work at pace this week.")
     elif n_locked > 1:
-        parts.append(f"{number_word(n_locked).capitalize()} contributors are running ahead of pace this week.")
+        parts.append(f"{number_word(n_locked).capitalize()} contributors are shipping substantive work at pace this week.")
     else:
-        parts.append("No contributors are running ahead of pace this week.")
-    if n_not == 1:
-        parts.append("One is running behind.")
-    elif n_not > 1:
-        parts.append(f"{number_word(n_not).capitalize()} are running behind.")
+        parts.append("No contributors are shipping at pace this week.")
+    if n_inactive == 1:
+        parts.append("One looks inactive.")
+    elif n_inactive > 1:
+        parts.append(f"{number_word(n_inactive).capitalize()} look inactive.")
     if n_middle > 0:
         parts.append("The rest hold the middle of the chart.")
     return " ".join(parts)
@@ -124,17 +206,22 @@ def _render_byline(blocks: list[UserBlock], until_short: str) -> str:
     )
 
 
-def _render_callouts(locked: list[UserBlock], not_locked: list[UserBlock]) -> str:
-    def names(blocks: list[UserBlock]) -> str:
+def _render_callouts(locked: list[UserBlock], inactive: list[UserBlock]) -> str:
+    def names(blocks: list[UserBlock], reason_fn=None) -> str:
         if not blocks:
             return '<li><em>none</em></li>'
         items: list[str] = []
         for b in blocks:
             label = b.person.github or b.person.name
-            if b.person.github is None:
-                tag = "no github"
-            else:
-                tag = (b.person.level or "").lower()
+            tag_parts: list[str] = []
+            level = (b.person.level or "").lower()
+            if level:
+                tag_parts.append(level)
+            if reason_fn:
+                reason = reason_fn(b)
+                if reason:
+                    tag_parts.append(reason)
+            tag = " · ".join(tag_parts)
             items.append(f'<li>{_html(label)}<em>{_html(tag)}</em></li>')
         return "".join(items)
     return f"""
@@ -143,43 +230,65 @@ def _render_callouts(locked: list[UserBlock], not_locked: list[UserBlock]) -> st
     <ol class="callout-names">{names(locked)}</ol>
   </div>
   <div class="callout callout-neg">
-    <div class="callout-label">Not locked in</div>
-    <ol class="callout-names">{names(not_locked)}</ol>
+    <div class="callout-label">Inactive</div>
+    <ol class="callout-names">{names(inactive, reason_fn=_inactive_reason)}</ol>
   </div>"""
 
 
+def _inactive_reason(b: UserBlock) -> str:
+    if b.scores.commit_count == 0:
+        return "no commits"
+    if b.scores.substantive_commit_count == 0:
+        return "noise only"
+    return f"{b.scores.substantive_minutes:.0f} min substantive"
+
+
 def _render_chart_svg(blocks: list[UserBlock]) -> str:
+    raw: list[tuple[float, float, UserBlock]] = [
+        (80 + (b.scores.output + 1) * 200, 360 - (b.scores.substance + 1) * 150, b)
+        for b in blocks
+    ]
+    ordered = sorted(
+        raw,
+        key=lambda triple: (-triple[2].scores.weighted_minutes, triple[2].person.id),
+    )
+    spread = _spread_positions(ordered, min_distance=22.0)
     dots: list[str] = []
-    for b in blocks:
-        x = 80 + (b.scores.focus + 1) * 200
-        y = 360 - (b.scores.output + 1) * 150
+    placed_labels: list[tuple[float, float, float, float]] = [
+        (415, 68, 480, 86),
+        (80, 68, 145, 86),
+        (415, 338, 480, 356),
+        (80, 338, 145, 356),
+    ]
+    for x, y, b in spread:
         is_mgr = b.person.is_manager or b.person.is_director
         is_director = b.person.is_director
         is_offgrid = b.person.github is None
         if is_offgrid:
             stroke, fill = "#bbbbbb", "#ffffff"
             text_weight, text_fill = "400", "#999999"
-        elif is_director and not (b.scores.output > 0 and b.scores.focus > 0):
+        elif is_director and not _is_locked_in(b):
             stroke = "#999999"
             fill = "#999999"
             text_weight, text_fill = "500", "#666666"
-        elif b.scores.output > 0 and b.scores.focus > 0:
+        elif _is_locked_in(b):
             stroke, fill = "#1a7c36", "#1a7c36"
             text_weight, text_fill = "600", "#121212"
-        elif _is_not_locked(b):
+        elif _is_in_inactive_quadrant(b):
             stroke, fill = "#c4192c", "#c4192c"
             text_weight, text_fill = "600", "#121212"
         else:
             stroke = "#999999"
-            fill = "#666666" if (b.scores.output > 0 or b.scores.focus < 0) else "#999999"
+            fill = "#666666"
             text_weight, text_fill = "400", "#666666"
-        label_x = x + 9
-        label_y = y + 4
-        anchor = "start"
-        if x > 420:
-            label_x = x - 9
-            anchor = "end"
         label = b.person.github or b.person.name
+        if is_mgr:
+            label_x = x
+            label_y = y - 13
+            anchor = "middle"
+            placed_labels.append((x - 30, label_y - 11, x + 30, label_y + 2))
+        else:
+            label_x, label_y, anchor = _label_offset(x, y, placed_labels)
         if is_offgrid:
             dots.append(
                 f'<circle cx="{x:.1f}" cy="{y:.1f}" r="5" fill="{fill}" stroke="{stroke}" stroke-width="1" stroke-dasharray="2 2"/>'
@@ -189,9 +298,6 @@ def _render_chart_svg(blocks: list[UserBlock]) -> str:
             )
             continue
         if is_mgr:
-            label_y = y - 13
-            anchor = "middle"
-            label_x = x
             dots.append(
                 f'<rect x="{x-7:.1f}" y="{y-7:.1f}" width="14" height="14" '
                 f'fill="#ffffff" stroke="{stroke}" stroke-width="1.5"/>'
@@ -215,51 +321,60 @@ def _render_chart_svg(blocks: list[UserBlock]) -> str:
 def _render_mini_chart_svg(blocks: list[UserBlock]) -> str:
     if not blocks:
         return ""
+    raw: list[tuple[float, float, UserBlock]] = [
+        (70 + (b.scores.output + 1) * 180, 310 - (b.scores.substance + 1) * 130, b)
+        for b in blocks
+    ]
+    ordered = sorted(
+        raw,
+        key=lambda triple: (-triple[2].scores.weighted_minutes, triple[2].person.id),
+    )
+    spread = _spread_positions(ordered, min_distance=18.0)
     dots: list[str] = []
-    for b in blocks:
-        x = 70 + (b.scores.focus + 1) * 180
-        y = 310 - (b.scores.output + 1) * 130
+    placed_labels: list[tuple[float, float, float, float]] = [
+        (370, 58, 430, 74),
+        (70, 58, 130, 74),
+        (370, 294, 430, 310),
+        (70, 294, 130, 310),
+    ]
+    for x, y, b in spread:
         is_mgr = b.person.is_manager or b.person.is_director
         is_director = b.person.is_director
         is_offgrid = b.person.github is None
         if is_offgrid:
             stroke, fill = "#bbbbbb", "#ffffff"
             label_fill, label_weight = "#999999", "400"
-        elif is_director and not (b.scores.output > 0 and b.scores.focus > 0):
+        elif is_director and not _is_locked_in(b):
             stroke, fill = "#999999", "#999999"
             label_fill, label_weight = "#666666", "500"
-        elif b.scores.output > 0 and b.scores.focus > 0:
+        elif _is_locked_in(b):
             stroke, fill = "#1a7c36", "#1a7c36"
             label_fill, label_weight = "#121212", "600"
-        elif _is_not_locked(b):
+        elif _is_in_inactive_quadrant(b):
             stroke, fill = "#c4192c", "#c4192c"
             label_fill, label_weight = "#121212", "600"
         else:
             stroke, fill = "#999999", "#999999"
             label_fill, label_weight = "#666666", "400"
-        label_x = x + 9
-        anchor = "start"
-        if x > 350:
-            label_x = x - 9
-            anchor = "end"
         label = b.person.github or b.person.name
+        label_x, label_y, anchor = _label_offset(x, y, placed_labels, horizon=340.0)
         if is_offgrid:
             dots.append(
                 f'<circle cx="{x:.1f}" cy="{y:.1f}" r="5" fill="{fill}" stroke="{stroke}" stroke-width="1.1" stroke-dasharray="2 2"/>'
-                f'<text x="{label_x:.1f}" y="{y+4:.1f}" text-anchor="{anchor}" font-family="\'Source Serif Pro\', Georgia, serif" font-style="italic" font-size="11" font-weight="{label_weight}" fill="{label_fill}">{_html(label)}</text>'
+                f'<text x="{label_x:.1f}" y="{label_y:.1f}" text-anchor="{anchor}" font-family="\'Source Serif Pro\', Georgia, serif" font-style="italic" font-size="11" font-weight="{label_weight}" fill="{label_fill}">{_html(label)}</text>'
             )
             continue
         if is_mgr:
             dots.append(
                 f'<rect x="{x-6.5:.1f}" y="{y-6.5:.1f}" width="13" height="13" fill="#ffffff" stroke="{stroke}" stroke-width="1.4"/>'
                 f'<rect x="{x-3.2:.1f}" y="{y-3.2:.1f}" width="6.4" height="6.4" fill="{fill}"/>'
-                f'<text x="{label_x:.1f}" y="{y+4:.1f}" text-anchor="{anchor}" font-family="\'Helvetica Neue\', Helvetica, sans-serif" font-size="11.5" font-weight="{label_weight}" fill="{label_fill}">{_html(label)}</text>'
+                f'<text x="{label_x:.1f}" y="{label_y:.1f}" text-anchor="{anchor}" font-family="\'Helvetica Neue\', Helvetica, sans-serif" font-size="11.5" font-weight="{label_weight}" fill="{label_fill}">{_html(label)}</text>'
             )
         else:
             dots.append(
                 f'<circle cx="{x:.1f}" cy="{y:.1f}" r="6.5" fill="#ffffff" stroke="{stroke}" stroke-width="1.4"/>'
                 f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3.2" fill="{fill}"/>'
-                f'<text x="{label_x:.1f}" y="{y+4:.1f}" text-anchor="{anchor}" font-family="\'Helvetica Neue\', Helvetica, sans-serif" font-size="11.5" font-weight="{label_weight}" fill="{label_fill}">{_html(label)}</text>'
+                f'<text x="{label_x:.1f}" y="{label_y:.1f}" text-anchor="{anchor}" font-family="\'Helvetica Neue\', Helvetica, sans-serif" font-size="11.5" font-weight="{label_weight}" fill="{label_fill}">{_html(label)}</text>'
             )
     return f'''<svg viewBox="0 0 480 380" width="100%" style="max-width: 480px; display: block; margin: 12px 0 18px;" xmlns="http://www.w3.org/2000/svg">
   <rect x="70" y="50" width="360" height="260" fill="#ffffff"/>
@@ -269,11 +384,11 @@ def _render_mini_chart_svg(blocks: list[UserBlock]) -> str:
   <line x1="70" y1="180" x2="430" y2="180" stroke="#999999" stroke-width="0.7" stroke-dasharray="3 3"/>
   <rect x="70" y="50" width="360" height="260" fill="none" stroke="#121212" stroke-width="0.95"/>
   <text x="425" y="68" text-anchor="end" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="11.5" fill="#1a7c36" font-weight="600">locked in</text>
-  <text x="75" y="68" text-anchor="start" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="11.5" fill="#666666">deep dive</text>
-  <text x="425" y="304" text-anchor="end" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="11.5" fill="#666666">scattered</text>
-  <text x="75" y="304" text-anchor="start" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="11.5" fill="#c4192c" font-weight="600">not locked in</text>
-  <text x="250" y="338" text-anchor="middle" font-family="'Helvetica Neue', Helvetica, sans-serif" font-size="9.5" font-weight="700" letter-spacing="0.22em" fill="#666666">FOCUS</text>
-  <g transform="translate(28, 180) rotate(-90)"><text text-anchor="middle" font-family="'Helvetica Neue', Helvetica, sans-serif" font-size="9.5" font-weight="700" letter-spacing="0.22em" fill="#666666">OUTPUT</text></g>
+  <text x="75" y="68" text-anchor="start" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="11.5" fill="#666666">focused</text>
+  <text x="425" y="304" text-anchor="end" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="11.5" fill="#666666">noise</text>
+  <text x="75" y="304" text-anchor="start" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="11.5" fill="#c4192c" font-weight="600">inactive</text>
+  <text x="250" y="338" text-anchor="middle" font-family="'Helvetica Neue', Helvetica, sans-serif" font-size="9.5" font-weight="700" letter-spacing="0.22em" fill="#666666">EFFORT</text>
+  <g transform="translate(28, 180) rotate(-90)"><text text-anchor="middle" font-family="'Helvetica Neue', Helvetica, sans-serif" font-size="9.5" font-weight="700" letter-spacing="0.22em" fill="#666666">SUBSTANCE</text></g>
   {chr(10).join(dots)}
 </svg>'''
 
@@ -286,17 +401,20 @@ def _render_rollup(org: Org, by_id: dict) -> str:
         if not scored_reports:
             continue
         team_minutes = sum(b.scores.weighted_minutes for b in scored_reports)
+        team_substantive = sum(b.scores.substantive_minutes for b in scored_reports)
         team_loc = sum(sum(b.scores.churn_by_kind.values()) for b in scored_reports)
-        n_locked = sum(1 for b in scored_reports if b.scores.output > 0 and b.scores.focus > 0)
-        n_below = sum(1 for b in scored_reports if b.scores.output < 0 and b.scores.focus < 0)
+        n_locked = sum(1 for b in scored_reports if _is_locked_in(b))
+        n_inactive = sum(1 for b in scored_reports if _is_inactive_for_callout(b))
         n_active = sum(1 for b in scored_reports if b.scores.commit_count > 0)
         label = leader.github or leader.name
+        substantive_pct = int(round(100 * team_substantive / team_minutes)) if team_minutes > 0 else 0
         rows.append(f"""
     <div class="rollup-row">
       <span class="rollup-mgr">{_html(label)} <small>{len(reports)} reports · {n_active} active</small></span>
       <span class="rollup-stat"><span class="rollup-stat-key">Team</span><span class="rollup-stat-val">{int(team_minutes):,}<small> min</small></span></span>
+      <span class="rollup-stat"><span class="rollup-stat-key">Subst.</span><span class="rollup-stat-val">{substantive_pct}<small>%</small></span></span>
       <span class="rollup-stat"><span class="rollup-stat-key">LOC</span><span class="rollup-stat-val">{team_loc:,}</span></span>
-      <span class="rollup-stat"><span class="rollup-stat-key">Locked</span><span class="rollup-stat-val pos">{n_locked}</span><span class="rollup-stat-key" style="margin-left:6px">/ Below</span><span class="rollup-stat-val neg">{n_below}</span></span>
+      <span class="rollup-stat"><span class="rollup-stat-key">Locked</span><span class="rollup-stat-val pos">{n_locked}</span><span class="rollup-stat-key" style="margin-left:6px">/ Inactive</span><span class="rollup-stat-val neg">{n_inactive}</span></span>
     </div>""")
     return "\n".join(rows)
 
@@ -310,9 +428,9 @@ def _render_ledger(org: Org, by_id: dict) -> str:
         is_offgrid = b.person.github is None
         if is_offgrid:
             row_cls = "in-neg is-offgrid"
-        elif b.scores.output > 0 and b.scores.focus > 0:
+        elif _is_locked_in(b):
             row_cls = "in-pos"
-        elif _is_not_locked(b):
+        elif _is_inactive_for_callout(b):
             row_cls = "in-neg"
         else:
             row_cls = ""
@@ -324,7 +442,7 @@ def _render_ledger(org: Org, by_id: dict) -> str:
         role = (b.person.role or "").upper()
         if is_offgrid:
             init_cell = '<em>no github account</em>'
-            stack_cell = '<em>—</em>'
+            work_cell = '<em>—</em>'
             minutes_cell = '<em>—</em>'
             commits_cell = '<em>—</em>'
         else:
@@ -335,7 +453,7 @@ def _render_ledger(org: Org, by_id: dict) -> str:
                 init_cell = '<em>—</em>'
             else:
                 init_cell = '<em>scattered</em>'
-            stack_cell = _format_loc_by_language(b.scores.loc_by_language, b.scores.churn_by_kind)
+            work_cell = _format_change_kind_mix(b.scores.change_kind_mix)
             minutes_cell = f'{b.scores.weighted_minutes:.0f}'
             commits_cell = str(b.scores.commit_count)
         rows.append(f"""
@@ -344,32 +462,28 @@ def _render_ledger(org: Org, by_id: dict) -> str:
           <td class="mgr">{_html(manager_label)}</td>
           <td class="lvl">{_html(level)} <span class="role">{_html(role)}</span></td>
           <td class="init">{init_cell}</td>
-          <td class="stack">{stack_cell}</td>
+          <td class="stack">{work_cell}</td>
           <td class="num">{minutes_cell}</td>
           <td class="num">{commits_cell}</td>
         </tr>""")
     return "\n".join(rows)
 
 
-def _format_loc_by_language(loc: dict[str, int], churn_fallback: dict[str, int]) -> str:
-    if loc:
-        items = [(k, v) for k, v in loc.items() if v >= 5][:3]
-        if items:
-            return " · ".join(f'{_html(k)} <small>{v:,}</small>' for k, v in items)
-    pretty_kind = {
-        "code": "code",
-        "data_pipeline": "data",
-        "test": "tests",
-        "infra": "infra",
-        "config": "config",
-        "docs": "docs",
-        "lockfile": "deps",
-        "other": "other",
+def _format_change_kind_mix(mix: dict[str, float]) -> str:
+    if not mix:
+        return '<em>—</em>'
+    pretty = {
+        "addition": "addition",
+        "deletion": "deletion",
+        "refactor": "refactor",
+        "rename": "rename",
+        "tweak": "tweak",
+        "noise": "noise",
     }
-    items = [(k, v) for k, v in churn_fallback.items() if v >= 5][:3]
+    items = [(pretty.get(k, k), v) for k, v in mix.items() if v >= 0.05][:3]
     if not items:
         return '<em>—</em>'
-    return " · ".join(f'{pretty_kind.get(k, k)} <small>{v:,}</small>' for k, v in items)
+    return " · ".join(f'{_html(k)} <small>{int(round(v * 100))}%</small>' for k, v in items)
 
 
 def _render_briefs(org: Org, by_id: dict) -> str:
@@ -538,7 +652,11 @@ def _meta_chip(b: UserBlock) -> str:
     role = (b.person.role or "").upper()
     if b.scores.commit_count == 0:
         return _html(f"{level} {role} · no commits")
-    return _html(f"{level} {role} · {b.scores.commit_count} commits · est. {b.scores.weighted_minutes:.0f} min")
+    substantive_pct = int(round(100 * b.scores.substantive_minutes / b.scores.weighted_minutes)) if b.scores.weighted_minutes > 0 else 0
+    return _html(
+        f"{level} {role} · {b.scores.commit_count} commits "
+        f"· {b.scores.weighted_minutes:.0f} min ({substantive_pct}% substantive)"
+    )
 
 
 def _html(s: str) -> str:
@@ -552,33 +670,37 @@ def _about_text() -> str:
         "and dashboards built in BI tools are invisible here — a bias largest for senior "
         "ICs and for Data Scientists, ML Engineers, and Data Analysts. Managers and "
         "directors are scored as contributors alongside ICs whenever they ship code; "
-        "only the audience leader (the VP) is exempt. The horizontal axis is "
-        "<em>breadth</em> — how many distinct <em>initiatives</em> the contributor "
-        "had this week. Two commits join the same initiative when they happen "
-        "within 48 hours of each other and share a conventional-commit scope, a "
-        "meaningful message token, or a top-level directory; so a 4-repo shipped "
-        "change for one feature collapses into a single initiative and lands on "
-        "the left, not scattered. The vertical axis is <em>output</em> — log-ratio "
-        "of weighted commit minutes to a fixed 600 minute / week reference. "
-        "Per-commit effort is heuristic-base × complexity multiplier × file-kind "
-        "weight: code, SQL/Airflow/dbt, tests, and infrastructure count at full "
-        "weight; generic configuration at 60%; documentation at 20%; lockfile-only "
-        "commits at 10%. A week of pure README edits will not register as locked "
-        "in. The two callouts are diagonal: <em>locked in</em> is the top-right "
-        "(lots of code shipped across many initiatives), <em>not locked in</em> "
-        "is the bottom-left (little code, one initiative or none). The other two "
-        "quadrants are descriptive rather than judged: top-left is a deep dive "
-        "(lots of code, one focused initiative); bottom-right is scattered (many "
-        "initiatives, little code on each). Levels and roles appear on each card "
-        "and in the ledger as context but do not enter the score formula. Each "
-        "commit is also categorized into a stack mix (code, data, tests, infra, "
-        "config, docs, deps); the dominant initiative and stack appear in the "
-        "per-contributor ledger. Manager rollups are the median of each manager's "
-        "direct reports."
+        "only the audience leader (the VP) is exempt. "
+        "The horizontal axis is <em>effort</em> — the log-ratio of complexity-weighted, "
+        "file-kind-weighted commit minutes to a 600 minute / week reference. "
+        "The vertical axis is <em>substance</em> — the share of that effort coming from "
+        "real changes (additions, deletions, refactors, renames) rather than noise "
+        "(merges, reverts, dependency bumps, lockfile-only commits, docs-only commits, "
+        "single-line tweaks), with light Bayesian smoothing so contributors with very "
+        "little absolute output don't claim the same height as heavy hitters. "
+        "A week of fifty dependency bumps has high commit count but lands at the bottom; "
+        "a week of one real fix lands toward the middle, not pinned at the top. "
+        "The <em>locked in</em> quadrant (top-right) is where substantive work is "
+        "shipping at pace; the <em>inactive</em> quadrant (bottom-left) is where it "
+        "isn't. The two off-diagonal quadrants are descriptive: top-left is "
+        "<em>focused</em> (substantive work, modest volume — typical for Staff+ ICs "
+        "and for thoughtful small fixes); bottom-right is <em>noise</em> (lots of "
+        "commits, little substance — bulk dependency updates, repeated docs touches, "
+        "or merge-heavy weeks). The Inactive callout uses a hard rule independent of "
+        "the chart: zero substantive commits, or fewer than 60 substantive minutes "
+        "per week of window. Off-grid contributors (no GitHub on record) are shown "
+        "with dashed markers and are not surfaced in either callout. Per-commit "
+        "effort is heuristic-base × complexity multiplier × file-kind weight: code, "
+        "SQL/Airflow/dbt, tests, and infrastructure count at full weight; generic "
+        "configuration at 60%; documentation at 20%; lockfile-only commits at 10%. "
+        "Each commit is classified as addition, deletion, refactor, rename, tweak, "
+        "or noise; the dominant initiative and the work-kind mix appear in the "
+        "per-contributor ledger. Manager rollups sum effort and substantive minutes "
+        "across each manager's direct reports."
     )
 
 
-_CHART_SVG_TEMPLATE = """<svg class="chart-svg" viewBox="0 0 540 460" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Quadrant chart of focus by output">
+_CHART_SVG_TEMPLATE = """<svg class="chart-svg" viewBox="0 0 540 460" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Quadrant chart of substance by effort">
   <defs>
     <pattern id="grid" width="40" height="30" patternUnits="userSpaceOnUse">
       <path d="M 40 0 L 0 0 0 30" fill="none" stroke="#e2e2e2" stroke-width="0.4"/>
@@ -595,29 +717,29 @@ _CHART_SVG_TEMPLATE = """<svg class="chart-svg" viewBox="0 0 540 460" xmlns="htt
   <line x1="80" y1="210" x2="480" y2="210" stroke="#999999" stroke-width="0.7" stroke-dasharray="3 3"/>
   <rect x="80" y="60" width="400" height="300" fill="none" stroke="#121212" stroke-width="1"/>
   <text x="475" y="80"  text-anchor="end"   font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="12" letter-spacing="0.04em" fill="#1a7c36" font-weight="600">locked in</text>
-  <text x="85"  y="80"  text-anchor="start" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="12" letter-spacing="0.04em" fill="#666666">deep dive</text>
-  <text x="475" y="350" text-anchor="end"   font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="12" letter-spacing="0.04em" fill="#666666">scattered</text>
-  <text x="85"  y="350" text-anchor="start" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="12" letter-spacing="0.04em" fill="#c4192c" font-weight="600">not locked in</text>
-  <g transform="translate(26, 210) rotate(-90)"><text text-anchor="middle" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="10" font-weight="700" letter-spacing="0.24em" fill="#121212">OUTPUT</text></g>
+  <text x="85"  y="80"  text-anchor="start" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="12" letter-spacing="0.04em" fill="#666666">focused</text>
+  <text x="475" y="350" text-anchor="end"   font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="12" letter-spacing="0.04em" fill="#666666">noise</text>
+  <text x="85"  y="350" text-anchor="start" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="12" letter-spacing="0.04em" fill="#c4192c" font-weight="600">inactive</text>
+  <g transform="translate(26, 210) rotate(-90)"><text text-anchor="middle" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="10" font-weight="700" letter-spacing="0.24em" fill="#121212">SUBSTANCE</text></g>
   <text x="72" y="64"  text-anchor="end" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="700" fill="#121212">+1</text>
-  <text x="72" y="76"  text-anchor="end" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="9.5" fill="#666666">≈1200 min/wk</text>
+  <text x="72" y="76"  text-anchor="end" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="9.5" fill="#666666">substantive</text>
   <text x="72" y="214" text-anchor="end" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="600" fill="#666666">0</text>
-  <text x="72" y="226" text-anchor="end" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="9.5" fill="#666666">≈600 min/wk</text>
+  <text x="72" y="226" text-anchor="end" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="9.5" fill="#666666">mixed</text>
   <text x="72" y="364" text-anchor="end" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="700" fill="#121212">−1</text>
-  <text x="72" y="352" text-anchor="end" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="9.5" fill="#666666">≈300 min/wk</text>
+  <text x="72" y="352" text-anchor="end" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="9.5" fill="#666666">noise</text>
   <g stroke="#121212" stroke-width="1">
     <line x1="76" y1="60"  x2="80" y2="60"/>
     <line x1="76" y1="210" x2="80" y2="210"/>
     <line x1="76" y1="360" x2="80" y2="360"/>
   </g>
-  <text x="280" y="408" text-anchor="middle" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="10" font-weight="700" letter-spacing="0.24em" fill="#121212">FOCUS</text>
-  <text x="280" y="423" text-anchor="middle" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="10" fill="#666666">breadth across initiatives</text>
+  <text x="280" y="408" text-anchor="middle" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="10" font-weight="700" letter-spacing="0.24em" fill="#121212">EFFORT</text>
+  <text x="280" y="423" text-anchor="middle" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="10" fill="#666666">log-ratio of complexity-weighted minutes</text>
   <text x="80"  y="378" text-anchor="middle" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="700" fill="#121212">−1</text>
-  <text x="80"  y="392" text-anchor="middle" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="9.5" fill="#666666">one initiative</text>
+  <text x="80"  y="392" text-anchor="middle" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="9.5" fill="#666666">≈300 min/wk</text>
   <text x="280" y="378" text-anchor="middle" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="600" fill="#666666">0</text>
-  <text x="280" y="392" text-anchor="middle" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="9.5" fill="#666666">two equal</text>
+  <text x="280" y="392" text-anchor="middle" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="9.5" fill="#666666">≈600 min/wk</text>
   <text x="480" y="378" text-anchor="middle" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="700" fill="#121212">+1</text>
-  <text x="480" y="392" text-anchor="middle" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="9.5" fill="#666666">many initiatives</text>
+  <text x="480" y="392" text-anchor="middle" font-family="'Source Serif Pro', Georgia, serif" font-style="italic" font-size="9.5" fill="#666666">≈1200 min/wk</text>
   <g stroke="#121212" stroke-width="1">
     <line x1="80"  y1="360" x2="80"  y2="364"/>
     <line x1="280" y1="360" x2="280" y2="364"/>
@@ -682,7 +804,7 @@ main { max-width: 760px; margin: 0 auto; padding: 32px 36px 80px; position: rela
 .chart-cap p { font-family: var(--serif); font-style: italic; font-size: 13px; line-height: 1.6; color: var(--mute); margin: 0 0 8px; }
 .chart-cap p:last-child { margin-bottom: 0; }
 .chart-cap b { font-style: normal; font-family: var(--sans); font-weight: 700; font-size: 9.5px; letter-spacing: 0.20em; text-transform: uppercase; color: var(--ink); margin-right: 8px; padding-right: 9px; border-right: 1px solid var(--rule-strong); }
-.rollup-row { display: grid; grid-template-columns: 1fr auto auto auto; gap: 22px; align-items: baseline; padding: 13px 4px; border-bottom: 1px solid var(--rule); }
+.rollup-row { display: grid; grid-template-columns: 1fr auto auto auto auto; gap: 18px; align-items: baseline; padding: 13px 4px; border-bottom: 1px solid var(--rule); }
 .rollup-row:last-child { border-bottom: 1px solid var(--rule-strong); }
 .rollup-mgr { font-family: var(--serif); font-size: 17px; color: var(--ink); font-weight: 600; }
 .rollup-mgr small { font-family: var(--sans); font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--mute); margin-left: 10px; font-weight: 600; }
@@ -772,7 +894,7 @@ class IndexEntry:
     until_iso: str
     contributor_count: int
     locked_in_count: int
-    not_locked_in_count: int
+    inactive_count: int
 
 
 def render_index(
@@ -790,7 +912,7 @@ def render_index(
             f'<span class="idx-stats">'
             f'<span class="idx-stat"><b>{entry.contributor_count}</b> contributors</span>'
             f'<span class="idx-stat pos"><b>{entry.locked_in_count}</b> locked in</span>'
-            f'<span class="idx-stat neg"><b>{entry.not_locked_in_count}</b> not locked in</span>'
+            f'<span class="idx-stat neg"><b>{entry.inactive_count}</b> inactive</span>'
             f'</span>'
             f'</a></li>'
         )
@@ -907,7 +1029,7 @@ _PAGE = """<!DOCTYPE html>
   <figure class="chart">
     {chart}
     <figcaption class="chart-cap">
-      <p><b>Note</b>Output is the log-ratio of complexity-weighted, file-kind-weighted commit minutes to a 600 minute / week reference. Focus is breadth across <em>initiative clusters</em> (commits sharing a scope, token, or top-level directory within 48 hours): a single coherent change spanning many repos counts as one initiative and lands on the left; multiple distinct initiatives land on the right. Top-right (lots of code, many initiatives) is "locked in"; bottom-left (little code, single initiative) is "not locked in".</p>
+      <p><b>Note</b>Effort is the log-ratio of complexity-weighted, file-kind-weighted commit minutes to a 600 minute / week reference. Substance is the share of that effort from real changes — additions, deletions, refactors, renames — versus noise (merges, reverts, dependency bumps, lockfile-only commits, docs-only commits, single-line tweaks), with light Bayesian smoothing so low-volume contributors don't pin at the extremes. Top-right is "locked in"; bottom-left is "inactive". The Inactive callout uses a hard rule: zero substantive commits or fewer than 60 substantive minutes per week of window.</p>
     </figcaption>
   </figure>
 
@@ -919,7 +1041,7 @@ _PAGE = """<!DOCTYPE html>
   <section class="sec">
     <h2 class="sec-head"><span class="sec-head-l"><span class="sec-mark" aria-hidden="true"></span>Per-contributor ledger</span></h2>
     <table>
-      <thead><tr><th>Contributor</th><th>Manager</th><th>Role</th><th>Top initiative</th><th>LOC by language</th><th class="num">Est. minutes</th><th class="num">Commits</th></tr></thead>
+      <thead><tr><th>Contributor</th><th>Manager</th><th>Role</th><th>Top initiative</th><th>Work mix</th><th class="num">Est. minutes</th><th class="num">Commits</th></tr></thead>
       <tbody>{ledger}</tbody>
     </table>
   </section>

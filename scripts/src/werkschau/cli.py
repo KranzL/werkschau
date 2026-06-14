@@ -5,6 +5,7 @@ import os
 import re
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -13,10 +14,11 @@ import click
 from .discover import discover_repos
 from .extract import extract_commit_detail, extract_commits
 from .features import commit_features
-from .levels import LEVELS, normalize_level, parse_user_spec
-from .team_config import list_teams, load_team, save_team, team_path
+from .scoring import cluster_initiatives
 
 _DURATION_RE = re.compile(r"^(\d+)([hdwmy])$")
+
+_EXTRACT_WORKER_COUNT = int(os.environ.get("WERKSCHAU_EXTRACT_WORKERS", "6"))
 
 
 def _parse_since(value: str) -> datetime:
@@ -51,28 +53,6 @@ def _parse_until(value: str | None) -> datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
-
-
-def _resolve_members(
-    user_specs: tuple[str, ...],
-    team: str | None,
-    org_path: str | None = None,
-) -> list[tuple[str, str | None]]:
-    inputs = sum(bool(x) for x in (user_specs, team, org_path))
-    if inputs > 1:
-        raise click.UsageError("specify exactly one of --user, --team, or --org")
-    if org_path:
-        from .org import load_org
-        org = load_org(org_path)
-        return [(p.github, p.level) for p in org.scored_people()]
-    if team:
-        try:
-            return load_team(team)
-        except FileNotFoundError as exc:
-            raise click.ClickException(str(exc)) from exc
-    if not user_specs:
-        raise click.UsageError("specify --user (one or more), --team, or --org")
-    return [parse_user_spec(spec) for spec in user_specs]
 
 
 def _extract_for_user(
@@ -135,6 +115,7 @@ def _extract_for_user(
         if len(commits) > max_commits_per_repo:
             click.echo(f"[{user}]      truncating {len(commits)} commits to {max_commits_per_repo}", err=True)
             commits = commits[:max_commits_per_repo]
+        candidate_shas: list[str] = []
         skipped_merges = 0
         for commit in commits:
             sha = commit.get("sha")
@@ -143,19 +124,14 @@ def _extract_for_user(
             if not include_merges and len(commit.get("parents") or []) > 1:
                 skipped_merges += 1
                 continue
-            try:
-                detail = extract_commit_detail(owner, repo, sha)
-            except Exception as exc:
-                click.echo(f"[{user}]      {sha[:8]} detail failed: {exc}", err=True)
-                continue
-            features = commit_features(detail)
-            if features["is_merge"] and not include_merges:
-                continue
-            features["repo"] = full
-            out_commits.append(features)
+            candidate_shas.append(sha)
         if skipped_merges:
             click.echo(f"[{user}]      skipped {skipped_merges} merge commits (saved API calls)", err=True)
+        for features in _fetch_features_concurrently(owner, repo, candidate_shas, user, include_merges):
+            features["repo"] = full
+            out_commits.append(features)
     out_commits.sort(key=lambda c: c.get("committer_date_utc", ""), reverse=True)
+    initiatives = cluster_initiatives(out_commits)
     return {
         "user": user,
         "level": level,
@@ -165,16 +141,62 @@ def _extract_for_user(
         "total_churn": sum(c["churn"] for c in out_commits),
         "total_heuristic_effort_minutes": sum(c["heuristic_effort_minutes"] for c in out_commits),
         "commits": out_commits,
+        "inferred_initiatives": [
+            {
+                "name": i.name,
+                "weighted_minutes": round(i.weighted_minutes),
+                "commit_count": i.commit_count,
+                "repos": list(i.repos),
+                "sample_messages": list(i.sample_messages),
+                "sample_shas": list(i.sample_shas),
+            }
+            for i in initiatives
+        ],
     }
 
 
+def _fetch_features_concurrently(
+    owner: str,
+    repo: str,
+    shas: list[str],
+    user: str,
+    include_merges: bool,
+) -> list[dict]:
+    if not shas:
+        return []
+    results: list[dict] = []
+    workers = max(1, min(_EXTRACT_WORKER_COUNT, len(shas)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        future_to_sha = {
+            pool.submit(_safe_fetch_features, owner, repo, sha, user): sha
+            for sha in shas
+        }
+        for future in as_completed(future_to_sha):
+            features = future.result()
+            if features is None:
+                continue
+            if features.get("is_merge") and not include_merges:
+                continue
+            results.append(features)
+    return results
+
+
+def _safe_fetch_features(owner: str, repo: str, sha: str, user: str) -> dict | None:
+    try:
+        detail = extract_commit_detail(owner, repo, sha)
+    except Exception as exc:
+        click.echo(f"[{user}]      {sha[:8]} detail failed: {exc}", err=True)
+        return None
+    return commit_features(detail)
+
+
 _GROUP_HELP = """\
-Audit a developer's GitHub activity and produce a narrative retrospective.
+Audit one or more developers' GitHub activity and produce a level-calibrated narrative retrospective.
 
 \b
 Two ways to run this:
-  /werkschau              -- inside Claude Code / Codex; no API key needed.
-  werkschau report        -- cron / CI; needs ANTHROPIC_API_KEY or OPENAI_API_KEY.
+  /werkschau              -- inside Claude Code; no API key needed.
+  werkschau report-org    -- cron / CI; needs ANTHROPIC_API_KEY or OPENAI_API_KEY.
 """
 
 
@@ -204,15 +226,8 @@ def _require_llm_api_key(provider: str) -> None:
     sys.exit(1)
 
 
-@main.command(help="Pull commits + diff features for one or more users across every repo they touched in the window.")
-@click.option(
-    "--user",
-    "users",
-    multiple=True,
-    help="GitHub username, optionally USER:LEVEL (e.g. KranzL:staff). Repeat for multi-user.",
-)
-@click.option("--team", default=None, help="Load members from ~/.werkschau/teams/<name>.toml")
-@click.option("--org", "org_path", default=None, type=click.Path(exists=True, dir_okay=False), help="Load members from an org.json (every non-VP person).")
+@main.command(help="Pull commits + diff features for every contributor in an org.json window. Writes JSON ready to feed into report-org or the slash command.")
+@click.option("--org", "org_path", required=True, type=click.Path(exists=True, dir_okay=False), help="Path to org.json (every non-VP person with a GitHub handle is pulled).")
 @click.option("--since", default="7d", show_default=True, help="window start (e.g. 7d, 30d, 1y, or ISO8601)")
 @click.option("--until", default=None, help="window end (ISO8601, default = now)")
 @click.option("--output", default=None, type=click.Path(dir_okay=False), help="write JSON here, default stdout")
@@ -220,9 +235,7 @@ def _require_llm_api_key(provider: str) -> None:
 @click.option("--max-commits-per-repo", default=200, show_default=True, type=int)
 @click.option("--include-merges/--no-merges", default=False, show_default=True, help="include merge commits")
 def extract(
-    users: tuple[str, ...],
-    team: str | None,
-    org_path: str | None,
+    org_path: str,
     since: str,
     until: str | None,
     output: str | None,
@@ -230,7 +243,10 @@ def extract(
     max_commits_per_repo: int,
     include_merges: bool,
 ) -> None:
-    members = _resolve_members(users, team, org_path)
+    from .org import load_org
+
+    org = load_org(org_path)
+    members = [(p.github, p.level) for p in org.scored_people()]
     since_dt = _parse_since(since)
     until_dt = _parse_until(until)
     if until_dt <= since_dt:
@@ -255,7 +271,6 @@ def extract(
     payload = {
         "since": since_dt.isoformat(),
         "until": until_dt.isoformat(),
-        "team": team,
         "user_count": len(user_payloads),
         "users": user_payloads,
     }
@@ -406,57 +421,6 @@ def _union_window(existing: dict, new_since: datetime, new_until: datetime) -> t
     return covered_since, covered_until
 
 
-@main.command(help="""Generate the narrative retrospective from a werkschau extract via an LLM.
-For cron / CI. Reads ANTHROPIC_API_KEY or OPENAI_API_KEY (also accepts the
-WERKSCHAU_-prefixed forms). For interactive use, run /werkschau instead.""")
-@click.option("--input", "input_path", type=click.Path(exists=True, dir_okay=False), default=None, help="Path to extract JSON. Reads stdin if omitted.")
-@click.option("--output", "-o", type=click.Path(dir_okay=False), default=None, help="Write markdown narrative here. Default stdout.")
-@click.option("--provider", type=click.Choice(["anthropic", "openai"]), default="anthropic", show_default=True)
-@click.option("--model", default=None, help="Override the provider default model.")
-@click.option("--base-url", "base_url", default=None, help="Override the LLM API base URL (proxy / Bedrock / OpenAI-compatible endpoint).")
-def report(
-    input_path: str | None,
-    output: str | None,
-    provider: str,
-    model: str | None,
-    base_url: str | None,
-) -> None:
-    _require_llm_api_key(provider)
-
-    if input_path:
-        raw = Path(input_path).read_text()
-    else:
-        if sys.stdin.isatty():
-            raise click.UsageError("provide --input or pipe extract JSON on stdin")
-        raw = sys.stdin.read()
-
-    try:
-        extract_data = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise click.ClickException(f"input is not valid JSON: {exc}") from exc
-
-    if not isinstance(extract_data, dict) or "users" not in extract_data:
-        raise click.ClickException(
-            "input does not look like a werkschau extract (missing 'users' field)"
-        )
-
-    from .reporter import generate_narrative
-
-    click.echo(f"Generating narrative via {provider}...", err=True)
-    narrative = generate_narrative(
-        extract_data,
-        provider=provider,
-        model=model,
-        base_url=base_url,
-    )
-
-    if output:
-        Path(output).write_text(narrative)
-        click.echo(f"Narrative written to {output}", err=True)
-    else:
-        click.echo(narrative)
-
-
 @main.command("report-org", help="""End-to-end org report. Reads org.json, runs extract for every non-VP person via gh auth, scores each one, fetches diff samples for the most substantive commits, generates per-person briefs (via LLM API or pre-baked --narratives), and emits a single HTML file ready to email.""")
 @click.option("--org", "org_path", type=click.Path(exists=True, dir_okay=False), required=True, help="Path to org.json")
 @click.option("--since", default="7d", show_default=True, help="window start (e.g. 7d, 30d, 1y, or ISO8601)")
@@ -469,7 +433,7 @@ def report(
 @click.option("--max-repos", default=50, show_default=True, type=int)
 @click.option("--max-commits-per-repo", default=200, show_default=True, type=int)
 @click.option("--include-merges/--no-merges", default=False, show_default=True)
-@click.option("--diff-samples-per-user", default=3, show_default=True, type=int, help="Number of substantive commits to fetch full diffs for per user (used when calling LLM).")
+@click.option("--diff-samples-per-user", default=3, show_default=True, type=int, help="Floor on substantive commits to fetch full diffs for per user. Scales up automatically with initiative count.")
 @click.option("--issue", default=1, type=int, show_default=True, help="Issue number for the nameplate (Vol. I · No. N)")
 @click.option("--provider", type=click.Choice(["anthropic", "openai"]), default="anthropic", show_default=True)
 @click.option("--model", default=None, help="Override the provider default model.")
@@ -587,7 +551,8 @@ def _render_one_report(
             narrative = "No commit-visible activity this week."
         else:
             from .reporter import generate_brief
-            sample_diffs = _gather_sample_diffs(user_payload, diff_samples_per_user)
+            sample_count = _adaptive_diff_sample_count(diff_samples_per_user, scores.initiatives)
+            sample_diffs = _gather_sample_diffs(user_payload, sample_count)
             cluster_hints = [
                 {
                     "name": i.name,
@@ -628,19 +593,24 @@ def _render_one_report(
     output_path.write_text(html_text)
     click.echo(f"Wrote {output_path}", err=True)
 
-    from .render import NOT_LOCKED_THRESHOLD
-    locked = sum(1 for b in blocks if b.scores.output > 0 and b.scores.focus > 0)
-    not_locked = sum(
-        1 for b in blocks
-        if b.scores.output <= NOT_LOCKED_THRESHOLD
-        and b.scores.focus <= NOT_LOCKED_THRESHOLD
-        and not b.person.is_director
-    )
-    return {
+    from .render import _is_inactive_for_callout, _is_locked_in
+    locked = sum(1 for b in blocks if _is_locked_in(b))
+    inactive = sum(1 for b in blocks if _is_inactive_for_callout(b))
+    meta = {
+        "since": since_dt.isoformat(),
+        "until": until_dt.isoformat(),
         "contributor_count": len(scored_people),
         "locked_in_count": locked,
-        "not_locked_in_count": not_locked,
+        "inactive_count": inactive,
     }
+    meta_path = output_path.with_suffix(output_path.suffix + ".meta.json")
+    meta_path.write_text(json.dumps(meta, indent=2))
+    return meta
+
+
+def _adaptive_diff_sample_count(floor: int, initiatives) -> int:
+    target = max(floor, len(initiatives))
+    return max(1, min(8, target))
 
 
 @main.command("slice", help="Filter a pre-pulled store by date window and write an extract JSON for one slice. Used by the /werkschau slash command to feed Claude one month's commits at a time without re-reading the full store.")
@@ -665,7 +635,7 @@ def slice_cmd(store_path: str | None, since: str, until: str | None, output: str
     click.echo(f"Sliced {total} commits across {len(extract['users'])} users -> {output}", err=True)
 
 
-@main.command("render-index", help="Render an index.html linking every werkschau-YYYY-MM.html in a directory. Used after a slash-command backfill to produce a navigable archive.")
+@main.command("render-index", help="Render an index.html linking every werkschau-YYYY-MM.html in a directory. Reads sibling .meta.json files for contributor / locked / inactive counts. Used after a slash-command backfill to produce a navigable archive.")
 @click.option("--dir", "report_dir", required=True, type=click.Path(exists=True, file_okay=False), help="Directory containing werkschau-YYYY-MM.html files.")
 @click.option("--org", "org_path", required=True, type=click.Path(exists=True, dir_okay=False), help="Path to org.json (used for the org name on the index).")
 @click.option("--output", "-o", default=None, type=click.Path(dir_okay=False), help="Output path. Default <dir>/index.html")
@@ -687,14 +657,21 @@ def render_index_cmd(report_dir: str, org_path: str, output: str | None) -> None
             month_end = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
         else:
             month_end = datetime(year, month + 1, 1, tzinfo=timezone.utc)
+        meta_path = path.with_suffix(path.suffix + ".meta.json")
+        meta: dict = {}
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text())
+            except json.JSONDecodeError:
+                meta = {}
         entries.append(IndexEntry(
             filename=path.name,
             month_label=month_start.strftime("%B %Y"),
             since_iso=month_start.isoformat(),
             until_iso=month_end.isoformat(),
-            contributor_count=0,
-            locked_in_count=0,
-            not_locked_in_count=0,
+            contributor_count=int(meta.get("contributor_count") or 0),
+            locked_in_count=int(meta.get("locked_in_count") or 0),
+            inactive_count=int(meta.get("inactive_count") or 0),
         ))
 
     if not entries:
@@ -841,7 +818,7 @@ def backfill(
             until_iso=month_end.isoformat(),
             contributor_count=meta["contributor_count"],
             locked_in_count=meta["locked_in_count"],
-            not_locked_in_count=meta["not_locked_in_count"],
+            inactive_count=meta["inactive_count"],
         ))
 
     index_html = render_index(entries, org_name=org.vp.name or org.vp.github, generated_iso=now.isoformat())
@@ -913,6 +890,7 @@ def _slice_store(store_data: dict, since_dt: datetime, until_dt: datetime) -> di
                 repo = commit.get("repo")
                 if repo:
                     repos.add(repo)
+        initiatives = cluster_initiatives(kept)
         sliced_users.append({
             "user": user.get("user"),
             "level": user.get("level"),
@@ -922,6 +900,17 @@ def _slice_store(store_data: dict, since_dt: datetime, until_dt: datetime) -> di
             "total_churn": sum(int(c.get("churn") or 0) for c in kept),
             "total_heuristic_effort_minutes": sum(int(c.get("heuristic_effort_minutes") or 0) for c in kept),
             "commits": kept,
+            "inferred_initiatives": [
+                {
+                    "name": i.name,
+                    "weighted_minutes": round(i.weighted_minutes),
+                    "commit_count": i.commit_count,
+                    "repos": list(i.repos),
+                    "sample_messages": list(i.sample_messages),
+                    "sample_shas": list(i.sample_shas),
+                }
+                for i in initiatives
+            ],
         })
     return {
         "since": since_dt.isoformat(),
@@ -940,6 +929,7 @@ def _user_payload(person, pre_extract, since_dt, until_dt, max_repos, max_commit
             "user": person.github, "level": person.level, "repos_visited": [],
             "repo_count": 0, "commit_count": 0, "total_churn": 0,
             "total_heuristic_effort_minutes": 0, "commits": [],
+            "inferred_initiatives": [],
         }
     click.echo(f"[{person.github}] extracting", err=True)
     return _extract_for_user(
@@ -950,10 +940,11 @@ def _user_payload(person, pre_extract, since_dt, until_dt, max_repos, max_commit
 
 def _gather_sample_diffs(user_payload: dict, n: int) -> list[dict]:
     from .extract import extract_commit_detail
-    from .scoring import _complexity_weighted_effort
+    from .scoring import _commit_effort
 
     commits = user_payload.get("commits", []) or []
-    ranked = sorted(commits, key=lambda c: _complexity_weighted_effort(c), reverse=True)
+    substantive = [c for c in commits if c.get("is_substantive", not (c.get("is_merge") or c.get("is_revert") or c.get("is_dependency_bump") or c.get("is_docs_only")))]
+    ranked = sorted(substantive or commits, key=lambda c: _commit_effort(c), reverse=True)
     samples: list[dict] = []
     for c in ranked[:n]:
         repo = c.get("repo") or ""
@@ -987,59 +978,56 @@ def _gather_sample_diffs(user_payload: dict, n: int) -> list[dict]:
     return samples
 
 
-@main.group(help="Manage saved teams (~/.werkschau/teams/*.toml).")
-def team() -> None:
+@main.group(help="Diff-cache and store maintenance.")
+def cache() -> None:
     pass
 
 
-@team.command(name="save", help="Save a team. Pass --user USER[:LEVEL] one or more times.")
-@click.argument("name")
-@click.option(
-    "--user",
-    "users",
-    multiple=True,
-    required=True,
-    help=f"GitHub username, optionally USER:LEVEL. Levels: {', '.join(LEVELS)}.",
-)
-def team_save(name: str, users: tuple[str, ...]) -> None:
-    members = [parse_user_spec(spec) for spec in users]
-    path = save_team(name, members)
-    click.echo(f"Saved {len(members)}-member team {name!r} to {path}")
+@cache.command("info", help="Show diff-cache size and entry count.")
+def cache_info() -> None:
+    from .cache import _cache_root
 
-
-@team.command(name="list", help="List saved teams.")
-def team_list() -> None:
-    teams = list_teams()
-    if not teams:
-        click.echo(
-            "No saved teams. Create one with: werkschau team save <name> --user USER[:LEVEL] ..."
-        )
+    root = _cache_root()
+    if not root.exists():
+        click.echo(f"No diff cache at {root}")
         return
-    for entry in teams:
-        click.echo(entry)
+    entries = list(root.glob("*.json"))
+    total = sum(p.stat().st_size for p in entries)
+    click.echo(f"Diff cache: {root}")
+    click.echo(f"  entries: {len(entries):,}")
+    click.echo(f"  size:    {_humanize(total)}")
 
 
-@team.command(name="show", help="Show the members of a saved team.")
-@click.argument("name")
-def team_show(name: str) -> None:
-    try:
-        members = load_team(name)
-    except FileNotFoundError as exc:
-        raise click.ClickException(str(exc)) from exc
-    click.echo(f"# {team_path(name)}")
-    for user, level in members:
-        click.echo(f"  {user} = {level or '(no level set)'}")
+@cache.command("purge", help="Delete diff-cache entries older than --older-than.")
+@click.option("--older-than", default="180d", show_default=True, help="Delete entries with mtime older than this (e.g. 30d, 6m, 1y).")
+@click.option("--dry-run", is_flag=True, default=False, help="Show what would be deleted without deleting.")
+def cache_purge(older_than: str, dry_run: bool) -> None:
+    from .cache import _cache_root
+
+    cutoff = _parse_since(older_than).timestamp()
+    root = _cache_root()
+    if not root.exists():
+        click.echo(f"No diff cache at {root}")
+        return
+    deleted = 0
+    bytes_freed = 0
+    for path in root.glob("*.json"):
+        st = path.stat()
+        if st.st_mtime < cutoff:
+            bytes_freed += st.st_size
+            deleted += 1
+            if not dry_run:
+                path.unlink(missing_ok=True)
+    verb = "would delete" if dry_run else "deleted"
+    click.echo(f"{verb.capitalize()} {deleted:,} entries ({_humanize(bytes_freed)})")
 
 
-@team.command(name="delete", help="Delete a saved team.")
-@click.argument("name")
-@click.confirmation_option(prompt="Delete this team file?")
-def team_delete(name: str) -> None:
-    path = team_path(name)
-    if not path.exists():
-        raise click.ClickException(f"team {name!r} not found")
-    path.unlink()
-    click.echo(f"Deleted {path}")
+def _humanize(num_bytes: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if num_bytes < 1024 or unit == "GB":
+            return f"{num_bytes:.1f} {unit}"
+        num_bytes /= 1024
+    return f"{num_bytes:.1f} GB"
 
 
 if __name__ == "__main__":

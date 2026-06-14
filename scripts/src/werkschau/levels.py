@@ -1,38 +1,10 @@
 from __future__ import annotations
 
-LEVELS: tuple[str, ...] = (
-    "l1",
-    "l2",
-    "l3",
-    "l4",
-    "l5",
-    "l6",
-    "l7",
-    "l8",
-    "l9",
-)
+_LEVELS: frozenset[str] = frozenset({
+    "l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "l9",
+})
 
-LEVEL_BASELINE_MINUTES: dict[str, int] = {
-    "l1": 500,
-    "l2": 600,
-    "l3": 700,
-    "l4": 600,
-    "l5": 400,
-    "l6": 300,
-    "l7": 250,
-    "l8": 180,
-    "l9": 120,
-}
-
-ROLES: tuple[str, ...] = ("swe", "ae", "mle", "ds", "da")
-
-ROLE_MULTIPLIER: dict[str, float] = {
-    "swe": 1.0,
-    "ae": 0.9,
-    "mle": 0.8,
-    "ds": 0.55,
-    "da": 0.5,
-}
+_ROLES: frozenset[str] = frozenset({"swe", "ae", "mle", "ds", "da"})
 
 
 def normalize_role(value: str | None) -> str | None:
@@ -41,7 +13,7 @@ def normalize_role(value: str | None) -> str | None:
     cleaned = " ".join(value.strip().lower().split())
     if not cleaned:
         return None
-    if cleaned in ROLES:
+    if cleaned in _ROLES:
         return cleaned
     aliases = {
         "software engineer": "swe",
@@ -60,22 +32,7 @@ def normalize_role(value: str | None) -> str | None:
     }
     if cleaned in aliases:
         return aliases[cleaned]
-    raise ValueError(f"unknown role {value!r}; expected one of {ROLES}")
-
-
-def baseline_minutes(role: str | None, level: str | None) -> float | None:
-    if level is None:
-        return None
-    level_norm = normalize_level(level)
-    if level_norm is None or level_norm not in LEVEL_BASELINE_MINUTES:
-        return None
-    base = LEVEL_BASELINE_MINUTES[level_norm]
-    if role is None:
-        return float(base)
-    role_norm = normalize_role(role)
-    if role_norm is None:
-        return float(base)
-    return float(base) * ROLE_MULTIPLIER.get(role_norm, 1.0)
+    raise ValueError(f"unknown role {value!r}; expected one of {sorted(_ROLES)}")
 
 
 def normalize_level(value: str | None) -> str | None:
@@ -84,7 +41,7 @@ def normalize_level(value: str | None) -> str | None:
     cleaned = " ".join(value.strip().lower().split())
     if not cleaned:
         return None
-    if cleaned in LEVELS:
+    if cleaned in _LEVELS:
         return cleaned
     aliases = {
         "intern": "l1",
@@ -136,12 +93,4 @@ def normalize_level(value: str | None) -> str | None:
     }
     if cleaned in aliases:
         return aliases[cleaned]
-    raise ValueError(f"unknown level {value!r}; expected one of {LEVELS}")
-
-
-def parse_user_spec(spec: str) -> tuple[str, str | None]:
-    text = spec.strip()
-    if ":" in text:
-        user, level_raw = text.split(":", 1)
-        return user.strip(), normalize_level(level_raw)
-    return text, None
+    raise ValueError(f"unknown level {value!r}; expected one of {sorted(_LEVELS)}")

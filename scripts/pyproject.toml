@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "werkschau"
-version = "0.3.0"
+version = "0.4.0"
 description = "Audit a developer's GitHub activity and produce a narrative retrospective with effort estimates"
 readme = {text = "Audit GitHub activity and produce a narrative retrospective with effort estimates", content-type = "text/plain"}
 license = "MIT"

@@ -257,7 +257,8 @@ Werkschau caches extracts and narratives at `~/.werkschau/extracts/`, keyed by d
 
 ```bash
 mkdir -p ~/.werkschau/extracts
-# Compute the window's start date in YYYY-MM-DD form. For durations like 7d/14d/30d:
+# Convert <SINCE> to an integer day count for date math. Durations: 7d -> 7, 14d -> 14, 30d -> 30, 6m -> 180, 1y -> 365.
+SINCE_DAYS=$(printf '%s' "<SINCE>" | awk '/^[0-9]+d$/ {sub(/d/, ""); print; exit} /^[0-9]+w$/ {sub(/w/, ""); print $1*7; exit} /^[0-9]+m$/ {sub(/m/, ""); print $1*30; exit} /^[0-9]+y$/ {sub(/y/, ""); print $1*365; exit} {print 7}')
 SINCE_DATE=$(date -v-${SINCE_DAYS}d +%Y-%m-%d 2>/dev/null || date -d "${SINCE_DAYS} days ago" +%Y-%m-%d)
 UNTIL_DATE=$(date +%Y-%m-%d)
 EXTRACT_PATH="$HOME/.werkschau/extracts/extract-${SINCE_DATE}-to-${UNTIL_DATE}.json"
@@ -316,21 +317,15 @@ Cap each commit's `patch` at ~1500 chars. Keep up to 8 files per commit.
 
 Skip diff-fetching entirely for users with `commit_count == 0`.
 
-## Step 7b: Cluster each user's commits into initiatives
+## Step 7b: Use the pre-computed initiatives
 
-Before writing briefs, mentally group each user's commits into 1-4 **initiatives**. The bullet structure of each brief should mirror those clusters.
+The extract JSON already contains `users[].inferred_initiatives[]` — clusters Python computed using a 48-hour time window combined with shared conventional-commit scope, message token, or top-2-level directory. Each cluster has `name`, `weighted_minutes`, `commit_count`, `repos`, `sample_messages`, and `sample_shas`.
 
-Use this heuristic: **two commits belong to the same initiative when they happen within 48 hours of each other AND share at least one of**:
+Use the top 1–3 clusters by `weighted_minutes` as your bullet candidates. Override the inferred `name` when the diffs make a more specific name obvious — you have richer signal than the heuristic does.
 
-1. A conventional-commit scope (`feat(alfredo):` matches `fix(alfredo):` — same scope `alfredo`).
-2. A meaningful message token (length ≥4, lowercase, ignoring boilerplate like `feat`, `fix`, `chore`, `update`, `bump`, `change`, `cleanup`, `wip`, etc.).
-3. A shared top-2-level directory in the file paths (`src/alfredo/...` matches `src/alfredo/config.py` even across repos).
+The extract also includes `change_kind` per commit (`addition`, `deletion`, `refactor`, `rename`, `tweak`, `noise`). A week dominated by `noise` (merges, dep bumps, docs-only, single-line tweaks) is a low-substance week — say so directly. Don't dress it up.
 
-A coherent change that spans multiple repos (e.g. main code in `src/`, k8s YAML in `deploy/`, terraform in `infra/`, docs in `docs/`) is **one initiative**, not four. The chart's focus axis treats it as +1 focus, and your bullets should match.
-
-A run of small unrelated commits with no shared signal is multiple singleton initiatives. Don't try to invent a unifying narrative — write one bullet per real cluster, plus a `**Maintenance**` bullet for noise if there's a lot of it.
-
-Trust the diffs over the heuristic when the diffs make a more specific cluster name obvious.
+A run of small unrelated commits with no shared signal will appear as multiple singleton initiatives. Don't invent a unifying narrative — write one bullet per real cluster, plus a `**Maintenance**` bullet for noise if there's a lot of it.
 
 ## Step 8: Write per-person briefs
 

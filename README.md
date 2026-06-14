@@ -1,13 +1,13 @@
 # Werkschau
 
-Audit one or more developers' GitHub activity over a window and produce a narrative retrospective of what they actually worked on, with effort estimates per initiative -- calibrated to each person's level.
+Audit an engineering org's GitHub activity over a window and produce a single HTML retrospective — nameplate, callouts, quadrant chart, manager rollups, per-contributor ledger, and per-manager breakdown pages. Designed to land in a VP's inbox as one self-contained file.
 
-Discovers every repo a user touched (including private org repos and repos they're not formally listed on) by unioning `/users/{user}/events` with `/search/commits?author=...`, pulls their commits + diffs, clusters the work into themes, and writes a per-person retrospective with comparative output across the team.
+The score axes are **effort** (complexity-weighted commit minutes vs. a fixed reference) and **substance** (share of that effort that came from real changes, not from dependency bumps, merges, lockfile updates, docs touches, or one-line tweaks). The top-right quadrant is *locked in*; the bottom-left is *inactive*, and a hard rule populates the Inactive callout independent of where the dot lands.
 
 ## Two entry points
 
-- **`/werkschau` slash command** -- runs inside Claude Code, uses your local `gh` auth, no Anthropic API key needed. Asks you who's on the team, gathers each person's level via `AskUserQuestion`, then Claude analyzes the extracted features in-conversation and writes the report. Saves teams for reuse.
-- **`werkschau analyze` CLI** *(planned)* -- standalone Python that calls the GitHub API and Anthropic API directly. Runs anywhere, including CI / cron.
+- **`/werkschau` slash command** — runs inside Claude Code, uses your local `gh` auth, no Anthropic API key needed. Walks you through building or loading an `org.json`, runs the extractor, writes per-person briefs from the in-conversation model, and renders the HTML.
+- **`werkschau report-org` CLI** — standalone Python. Same pipeline but calls the Anthropic or an OpenAI-compatible API for the briefs. Runs anywhere, including cron / CI.
 
 ## Install
 
@@ -19,7 +19,7 @@ Inside Claude Code:
 /werkschau
 ```
 
-First `/werkschau` invocation sets up a local Python venv on its own. You only need `gh` authenticated (`gh auth login`).
+First `/werkschau` invocation provisions a local Python venv on its own. You only need `gh` authenticated (`gh auth login`).
 
 ## Quickstart
 
@@ -27,67 +27,88 @@ First `/werkschau` invocation sets up a local Python venv on its own. You only n
 /werkschau
 ```
 
-Walks you through the team setup, runs the extractor, and writes a comparative report.
+Walks through org bootstrap (if you don't have an `org.json` yet), pulls the window, writes the briefs, and saves `werkschau-YYYY-MM-DD.html` in the current directory plus a sidecar `.meta.json` for the index.
 
-For repeat runs of the same team:
+For repeat weekly runs:
 
 ```
-/werkschau --team platform --since 7d
+/werkschau --since 7d
 ```
+
+For a monthly archive:
+
+```
+/werkschau --backfill 6
+```
+
+Renders six complete calendar months plus an `index.html` linking them.
 
 ## Pipeline
 
 ```
-events + search -> repo list -> commits -> diff features
-  -> heuristic prefilter -> per-user theme clustering
-  -> level-calibrated effort estimates -> comparative report
+events + search -> repo list -> commits -> per-commit features
+  -> per-commit change_kind classification (addition / deletion /
+     refactor / rename / tweak / noise)
+  -> initiative clustering (48h + scope/token/dir heuristic)
+  -> effort and substance scoring + Inactive flag
+  -> per-person brief (LLM)
+  -> HTML render
 ```
 
-## Level calibration
+## What goes in the score
 
-Werkschau models each level's commit-visible output range *and* what's invisible at that level. Senior+ engineers shift leverage toward review, design, and mentorship -- so high commit volume at Staff is often a smell, not a strength. The skill's calibration table is the source of truth.
+Per commit, Werkschau extracts: additions / deletions / file count / file paths / file `status` (added/modified/renamed) / test ratio / merge flag / revert flag / dependency-bump flag / docs-only flag / conventional-commit scope. From those it derives a **change_kind** (`addition`, `deletion`, `refactor`, `rename`, `tweak`, or `noise`) and a heuristic effort in minutes.
 
-| Level | Typical commit-visible h/wk | What's invisible |
-|---|---|---|
-| Junior | 10-15h | Onboarding, learning |
-| Mid | 15-25h | Some review, debugging |
-| Senior | 15-25h | More review, design discussions |
-| Staff | 8-18h | RFCs, mentorship, cross-team work |
-| Principal | 5-12h | Strategy, architecture, hiring |
+The user-level scores roll those up:
 
-Werkschau emits a "tracking high / on pace / tracking low *for level*" tag per user. **It is not a performance-management tool** -- the tags describe commit-visible volume relative to that level's typical range, not whether the person is performing well. Real performance assessment requires the invisible work.
+- **Effort** — log-ratio of complexity-weighted, file-kind-weighted minutes to a 600 min/week reference. Code, SQL/Airflow/dbt, tests, and infrastructure count at full weight; generic configuration at 60%; documentation at 20%; lockfile-only commits at 10%.
+- **Substance** — share of effort that came from non-noise commits, mapped to [−1, +1].
+- **Inactive** (boolean) — fires when the user has zero substantive commits, *or* fewer than 60 substantive minutes per week of window. Used to populate the Inactive callout independent of where the dot lands on the chart.
 
-## CLI (extractor)
+The Inactive callout excludes off-grid contributors (no GitHub handle) and directors, since directors aren't expected to commit much.
 
-Single user:
+## CLI
 
 ```bash
-werkschau extract --user KranzL:staff --since 7d --output /tmp/werkschau.json
+werkschau extract --org ~/.werkschau/org.json --since 7d --output /tmp/wk.json
+werkschau report-org \
+  --org ~/.werkschau/org.json \
+  --extract /tmp/wk.json \
+  --narratives /tmp/narratives.json \
+  --since 7d --output werkschau-$(date +%Y-%m-%d).html
 ```
 
-Multiple users:
+For cron / CI without a pre-baked narrative:
 
 ```bash
-werkschau extract \
-  --user KranzL:staff \
-  --user alice:senior \
-  --user bob:junior \
-  --since 7d \
-  --output /tmp/werkschau.json
+WERKSCHAU_ANTHROPIC_API_KEY=<key> \
+werkschau report-org --org ~/.werkschau/org.json --since 7d --output report.html
 ```
 
-Saved team:
+Or against an OpenAI-compatible endpoint:
 
 ```bash
-werkschau team save platform --user KranzL:staff --user alice:senior --user bob:junior
-werkschau extract --team platform --since 7d --output /tmp/werkschau.json
+WERKSCHAU_OPENAI_API_KEY=<key> \
+werkschau report-org \
+  --org ~/.werkschau/org.json --since 7d --output report.html \
+  --provider openai \
+  --base-url https://api.openai.com/v1 \
+  --model gpt-5
 ```
 
-Output JSON has `users[]`, one entry per member, with per-commit heuristic features (additions, deletions, files, churn, test ratio, time-of-day, weekday, message quality, is_merge, is_revert, co-authors, heuristic effort). The slash command pipes this into Claude for theme clustering and narrative generation.
+The `pull` / `slice` / `backfill` commands maintain a window-agnostic local store at `~/.werkschau/store.json` so re-slicing into multiple windows doesn't re-hit GitHub. The `cache info` / `cache purge` commands maintain the per-commit diff cache at `~/.cache/werkschau/diffs/`.
+
+## Extract JSON shape
+
+The `users[]` array has one entry per contributor with `user`, `level`, `repos_visited`, `repo_count`, `commit_count`, `total_churn`, `total_heuristic_effort_minutes`, `commits[]`, and `inferred_initiatives[]`. Per commit: `sha`, `repo`, `committer_date_utc`, `hour_utc`, `weekday`, `message_first_line`, `additions`, `deletions`, `churn`, `files_changed`, `unique_top_dirs`, `file_paths_sample`, `file_status_counts`, `test_ratio`, `is_merge`, `is_revert`, `is_dependency_bump`, `is_docs_only`, `change_kind`, `is_substantive`, `heuristic_effort_minutes`, `co_authors`.
 
 ## Why "Werkschau"
 
-German for "showing of one's work" -- a portfolio review. Sibling to [Überblick](https://github.com/KranzL/uberblick) (Snowflake role topology) and [Einblick](https://github.com/KranzL/einblick) (query history audit). Same shape, different domain.
+German for "showing of one's work" — a portfolio review. Sibling to [Überblick](https://github.com/KranzL/uberblick) (Snowflake role topology) and [Einblick](https://github.com/KranzL/einblick) (query history audit). Same shape, different domain.
+
+## What this is not
+
+A performance-management input. The chart and callouts describe commit-visible work; code review, debugging, design, mentorship, and notebook / BI work are intentionally invisible here. Senior+ ICs and DS/DA roles especially carry leverage that doesn't surface in `git log`.
 
 ## License
 

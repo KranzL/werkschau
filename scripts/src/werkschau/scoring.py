@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import math
-import os
 import re
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 
@@ -19,8 +18,12 @@ WORK_KIND_WEIGHTS: dict[str, float] = {
     "other": 0.5,
 }
 
+NOISE_CHANGE_KINDS: frozenset[str] = frozenset({"noise"})
+
 CLUSTER_TIME_WINDOW = timedelta(hours=48)
 MIN_TOKEN_LENGTH = 4
+
+INACTIVE_SUBSTANTIVE_MINUTES_PER_WEEK = 60.0
 
 
 _STOPWORDS: frozenset[str] = frozenset({
@@ -63,16 +66,21 @@ class Initiative:
 
 
 OUTPUT_BASELINE_MINUTES = 600.0
+SUBSTANCE_SMOOTHING_MINUTES = 80.0
 
 
 @dataclass(frozen=True)
 class Scores:
     weighted_minutes: float
+    substantive_minutes: float
     commit_count: int
+    substantive_commit_count: int
     repo_count: int
     output: float
-    focus: float
+    substance: float
+    inactive: bool
     work_kind_mix: dict[str, float]
+    change_kind_mix: dict[str, float]
     churn_by_kind: dict[str, int]
     loc_by_language: dict[str, int]
     initiatives: tuple[Initiative, ...]
@@ -95,12 +103,19 @@ class Scores:
 def score_user(user_payload: dict, level: str | None, role: str | None, window_days: int) -> Scores:
     commits = user_payload.get("commits", []) or []
     weighted_total = 0.0
+    substantive_total = 0.0
+    substantive_commits = 0
     kind_effort: dict[str, float] = defaultdict(float)
     kind_churn: dict[str, float] = defaultdict(float)
     lang_churn: dict[str, float] = defaultdict(float)
+    change_kind_effort: dict[str, float] = defaultdict(float)
     for c in commits:
         w = _commit_effort(c)
         weighted_total += w
+        if _is_substantive(c):
+            substantive_total += w
+            substantive_commits += 1
+        change_kind_effort[c.get("change_kind") or "tweak"] += w
         churn = float((c.get("additions") or 0) + (c.get("deletions") or 0))
         for kind, share in _commit_kind_mix(c).items():
             kind_effort[kind] += w * share
@@ -110,22 +125,34 @@ def score_user(user_payload: dict, level: str | None, role: str | None, window_d
 
     if weighted_total > 0:
         work_kind_mix = {k: v / weighted_total for k, v in kind_effort.items() if v > 0}
+        change_kind_mix = {k: v / weighted_total for k, v in change_kind_effort.items() if v > 0}
     else:
         work_kind_mix = {}
+        change_kind_mix = {}
     churn_by_kind = {k: int(round(v)) for k, v in kind_churn.items() if v >= 1}
     loc_by_language = {k: int(round(v)) for k, v in lang_churn.items() if v >= 1}
 
     initiatives = cluster_initiatives(commits)
     output = _output_score(weighted_total, window_days)
-    focus = _focus_score(initiatives, weighted_total, len(commits))
+    substance = _substance_score(substantive_total, weighted_total)
+    inactive = _is_inactive(
+        commit_count=len(commits),
+        substantive_minutes=substantive_total,
+        substantive_commits=substantive_commits,
+        window_days=window_days,
+    )
 
     return Scores(
         weighted_minutes=weighted_total,
+        substantive_minutes=substantive_total,
         commit_count=len(commits),
+        substantive_commit_count=substantive_commits,
         repo_count=len({c.get("repo") for c in commits if c.get("repo")}),
         output=output,
-        focus=focus,
+        substance=substance,
+        inactive=inactive,
         work_kind_mix=dict(sorted(work_kind_mix.items(), key=lambda kv: kv[1], reverse=True)),
+        change_kind_mix=dict(sorted(change_kind_mix.items(), key=lambda kv: kv[1], reverse=True)),
         churn_by_kind=dict(sorted(churn_by_kind.items(), key=lambda kv: kv[1], reverse=True)),
         loc_by_language=dict(sorted(loc_by_language.items(), key=lambda kv: kv[1], reverse=True)),
         initiatives=tuple(initiatives),
@@ -139,11 +166,42 @@ def _output_score(weighted_total: float, window_days: int) -> float:
     return _clip(math.log2(weighted_total / scaled), -1.0, 1.0)
 
 
-def _focus_score(initiatives: list[Initiative] | tuple[Initiative, ...], weighted_total: float, commit_count: int) -> float:
-    if commit_count < 3 or weighted_total <= 0 or not initiatives:
-        return 0.0
-    herfindahl = sum((i.weighted_minutes / weighted_total) ** 2 for i in initiatives)
-    return _clip(1.0 - 2.0 * herfindahl, -1.0, 1.0)
+def _substance_score(substantive_minutes: float, weighted_total: float) -> float:
+    if weighted_total <= 0:
+        return -1.0
+    alpha = SUBSTANCE_SMOOTHING_MINUTES
+    smoothed_frac = (substantive_minutes + alpha) / (weighted_total + 2 * alpha)
+    return _clip(2.0 * smoothed_frac - 1.0, -1.0, 1.0)
+
+
+def _is_inactive(
+    *,
+    commit_count: int,
+    substantive_minutes: float,
+    substantive_commits: int,
+    window_days: int,
+) -> bool:
+    if commit_count == 0:
+        return True
+    if substantive_commits == 0:
+        return True
+    threshold = INACTIVE_SUBSTANTIVE_MINUTES_PER_WEEK * (max(1, window_days) / 7.0)
+    return substantive_minutes < threshold
+
+
+def _is_substantive(commit: dict) -> bool:
+    explicit = commit.get("is_substantive")
+    if explicit is not None:
+        return bool(explicit)
+    kind = commit.get("change_kind")
+    if kind is not None:
+        return kind not in NOISE_CHANGE_KINDS
+    return not (
+        commit.get("is_merge")
+        or commit.get("is_revert")
+        or commit.get("is_dependency_bump")
+        or commit.get("is_docs_only")
+    )
 
 
 def _clip(x: float, lo: float, hi: float) -> float:
@@ -153,11 +211,15 @@ def _clip(x: float, lo: float, hi: float) -> float:
 def offgrid_scores() -> Scores:
     return Scores(
         weighted_minutes=0.0,
+        substantive_minutes=0.0,
         commit_count=0,
+        substantive_commit_count=0,
         repo_count=0,
         output=-1.0,
-        focus=-1.0,
+        substance=-1.0,
+        inactive=True,
         work_kind_mix={},
+        change_kind_mix={},
         churn_by_kind={},
         loc_by_language={},
         initiatives=(),
@@ -309,11 +371,13 @@ def _commit_effort(commit: dict) -> float:
         mult *= 1.1
     if commit.get("is_dependency_bump"):
         mult *= 0.3
+    if commit.get("is_docs_only"):
+        mult *= 0.5
     if commit.get("is_merge") or commit.get("is_revert"):
         mult *= 0.4
     if files <= 1 and churn <= 5:
         mult *= 0.6
-    mult = max(0.25, min(2.0, mult))
+    mult = max(0.2, min(2.0, mult))
     work_weight = _commit_work_kind_weight(commit)
     return base * mult * work_weight
 
