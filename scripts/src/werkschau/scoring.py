@@ -68,6 +68,18 @@ class Initiative:
 OUTPUT_BASELINE_MINUTES = 600.0
 SUBSTANCE_SMOOTHING_MINUTES = 80.0
 
+EFFORT_BAND_LOW_MINUTES: float = OUTPUT_BASELINE_MINUTES / 2
+EFFORT_BAND_HIGH_MINUTES: float = OUTPUT_BASELINE_MINUTES
+
+
+def effort_band(minutes: float) -> str:
+    """minutes per week; returns 'low', 'medium', or 'high'"""
+    if minutes < EFFORT_BAND_LOW_MINUTES:
+        return "low"
+    if minutes < EFFORT_BAND_HIGH_MINUTES:
+        return "medium"
+    return "high"
+
 
 @dataclass(frozen=True)
 class Scores:

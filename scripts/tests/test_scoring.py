@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from werkschau.scoring import (
     INACTIVE_SUBSTANTIVE_MINUTES_PER_WEEK,
     cluster_initiatives,
+    effort_band,
     offgrid_scores,
     score_user,
 )
@@ -133,6 +134,16 @@ def test_cluster_initiatives_groups_by_shared_token_within_48h():
     assert len(initiatives) == 2
     top = initiatives[0]
     assert "auth" in top.name or top.commit_count == 2
+
+
+def test_effort_band():
+    assert effort_band(100) == "low"
+    assert effort_band(0) == "low"
+    assert effort_band(-1) == "low"
+    assert effort_band(300) == "medium"
+    assert effort_band(450) == "medium"
+    assert effort_band(600) == "high"
+    assert effort_band(900) == "high"
 
 
 def test_cluster_initiatives_drops_merges():
