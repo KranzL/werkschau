@@ -25,6 +25,17 @@ MIN_TOKEN_LENGTH = 4
 
 INACTIVE_SUBSTANTIVE_MINUTES_PER_WEEK = 60.0
 
+ACTIVITY_TIER_QUIET_MAX: int = 10
+ACTIVITY_TIER_BUSY_MIN: int = 30
+
+
+def activity_tier(events: int) -> str:
+    if events < ACTIVITY_TIER_QUIET_MAX:
+        return "quiet"
+    if events >= ACTIVITY_TIER_BUSY_MIN:
+        return "busy"
+    return "steady"
+
 
 _STOPWORDS: frozenset[str] = frozenset({
     "feat", "feats", "feature", "features", "fix", "fixes", "fixed", "hotfix",
