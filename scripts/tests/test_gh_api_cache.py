@@ -74,14 +74,19 @@ def test_disable_cache_bypasses_cache_hit(tmp_path):
 
 
 def test_no_cache_bypasses_read_and_write(tmp_path):
-    werkschau.gh_api.disable_cache()
     data = {"id": 42}
-    with patch("werkschau.gh_api.subprocess.run", return_value=_mock_run(data)) as mock_run:
-        result = werkschau.gh_api.gh_api("/repos/acme/widget")
-    assert result == data
+    key = _response_cache_key("GET", "/repos/acme/widget", False, None)
+    set_cached_response(key, _responses_root(), data)
+    werkschau.gh_api.disable_cache()
+    fresh_data = {"id": 99}
+    with patch("werkschau.gh_api.subprocess.run", return_value=_mock_run(fresh_data)) as mock_run:
+        werkschau.gh_api.gh_api("/repos/acme/widget")
     assert mock_run.call_count == 1
-    resp_dir = tmp_path / "responses"
-    assert not resp_dir.exists() or list(resp_dir.glob("*.json")) == []
+    resp_dir = _responses_root()
+    files_after = list(resp_dir.glob("*.json"))
+    assert len(files_after) == 1
+    written = json.loads(files_after[0].read_text())
+    assert written.get("data") == data
 
 
 def test_stale_cache_entry_is_treated_as_miss(tmp_path):

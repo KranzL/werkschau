@@ -983,7 +983,7 @@ def _gather_sample_diffs(user_payload: dict, n: int) -> list[dict]:
     return samples
 
 
-@main.group(help="Diff-cache and store maintenance.")
+@main.group(help="Diff-cache and store maintenance. Do not share WERKSCHAU_CACHE_DIR across different gh-auth identities, as a cached private response could be served to a different identity for up to the configured TTL.")
 def cache() -> None:
     pass
 

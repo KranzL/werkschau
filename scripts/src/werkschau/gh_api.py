@@ -75,7 +75,10 @@ def gh_api(
             continue
         parsed = _parse_output(result.stdout, paginate)
         if key is not None and _CACHE_ENABLED and parsed is not None and parsed != []:
-            set_cached_response(key, _responses_root(), parsed)
+            try:
+                set_cached_response(key, _responses_root(), parsed)
+            except OSError:
+                pass
         return parsed
 
     raise GhError(f"gh api {path}: exceeded {_MAX_RETRIES} retries")

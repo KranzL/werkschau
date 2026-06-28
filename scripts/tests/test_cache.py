@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 import time
 from pathlib import Path
 
@@ -119,3 +121,11 @@ def test_default_ttl_without_env_var(monkeypatch):
 def test_default_ttl_with_env_var(monkeypatch):
     monkeypatch.setenv("WERKSCHAU_CACHE_TTL", "300")
     assert _default_ttl() == 300
+
+
+def test_set_cached_response_file_mode(tmp_path):
+    root = tmp_path / "responses"
+    set_cached_response("permkey", root, {"secret": True})
+    file_path = root / "permkey.json"
+    assert file_path.exists()
+    assert stat.S_IMODE(os.stat(file_path).st_mode) == 0o600
