@@ -1,3 +1,20 @@
+"""
+Scoring module for werkschau.
+
+calendar dict contract (consumed by score_user() as the `calendar` keyword argument):
+    meeting_minutes   float  — total scheduled-event duration; excludes focus and OOO blocks
+    meeting_count     int    — total number of events counted in meeting_minutes
+    focus_minutes     float  — total duration of focus/deep-work blocks
+    ooo_minutes       float  — total duration of OOO/out-of-office blocks
+    recurring_count   int    — events part of a recurring series; recurring_count + adhoc_count == meeting_count
+    adhoc_count       int    — non-recurring (ad-hoc) events; recurring_count + adhoc_count == meeting_count
+    one_on_one_count  int    — events with exactly 2 attendees including organizer; one_on_one_count + group_count == meeting_count
+    group_count       int    — events with 3 or more attendees; one_on_one_count + group_count == meeting_count
+    window_days       int    — the report window length in days
+
+All fields default to 0 / 0.0 when the dict is absent or a key is missing.
+The field is absent/null when calendar data was not fetched.
+"""
 from __future__ import annotations
 
 import math
@@ -24,6 +41,7 @@ CLUSTER_TIME_WINDOW = timedelta(hours=48)
 MIN_TOKEN_LENGTH = 4
 
 INACTIVE_SUBSTANTIVE_MINUTES_PER_WEEK = 60.0
+MEETING_HEAVY_MINUTES_PER_WEEK: float = 480.0
 
 
 _STOPWORDS: frozenset[str] = frozenset({
@@ -84,6 +102,15 @@ class Scores:
     churn_by_kind: dict[str, int]
     loc_by_language: dict[str, int]
     initiatives: tuple[Initiative, ...]
+    meeting_minutes: float = 0.0
+    meeting_count: int = 0
+    focus_minutes: float = 0.0
+    ooo_minutes: float = 0.0
+    recurring_count: int = 0
+    adhoc_count: int = 0
+    one_on_one_count: int = 0
+    group_count: int = 0
+    meeting_heavy: bool = False
 
     @property
     def initiative_count(self) -> int:
@@ -100,7 +127,7 @@ class Scores:
         return self.initiatives[0].weighted_minutes / self.weighted_minutes
 
 
-def score_user(user_payload: dict, level: str | None, role: str | None, window_days: int) -> Scores:
+def score_user(user_payload: dict, level: str | None, role: str | None, window_days: int, calendar: dict | None = None) -> Scores:
     commits = user_payload.get("commits", []) or []
     weighted_total = 0.0
     substantive_total = 0.0
@@ -142,6 +169,18 @@ def score_user(user_payload: dict, level: str | None, role: str | None, window_d
         window_days=window_days,
     )
 
+    cal = calendar or {}
+    cal_meeting_minutes = float(cal.get("meeting_minutes", 0) or 0)
+    cal_meeting_count = int(cal.get("meeting_count", 0) or 0)
+    cal_focus_minutes = float(cal.get("focus_minutes", 0) or 0)
+    cal_ooo_minutes = float(cal.get("ooo_minutes", 0) or 0)
+    cal_recurring_count = int(cal.get("recurring_count", 0) or 0)
+    cal_adhoc_count = int(cal.get("adhoc_count", 0) or 0)
+    cal_one_on_one_count = int(cal.get("one_on_one_count", 0) or 0)
+    cal_group_count = int(cal.get("group_count", 0) or 0)
+    cal_window = int(cal.get("window_days", window_days) or window_days)
+    meeting_heavy = cal_meeting_minutes >= MEETING_HEAVY_MINUTES_PER_WEEK * (max(1, cal_window) / 7.0)
+
     return Scores(
         weighted_minutes=weighted_total,
         substantive_minutes=substantive_total,
@@ -156,6 +195,15 @@ def score_user(user_payload: dict, level: str | None, role: str | None, window_d
         churn_by_kind=dict(sorted(churn_by_kind.items(), key=lambda kv: kv[1], reverse=True)),
         loc_by_language=dict(sorted(loc_by_language.items(), key=lambda kv: kv[1], reverse=True)),
         initiatives=tuple(initiatives),
+        meeting_minutes=cal_meeting_minutes,
+        meeting_count=cal_meeting_count,
+        focus_minutes=cal_focus_minutes,
+        ooo_minutes=cal_ooo_minutes,
+        recurring_count=cal_recurring_count,
+        adhoc_count=cal_adhoc_count,
+        one_on_one_count=cal_one_on_one_count,
+        group_count=cal_group_count,
+        meeting_heavy=meeting_heavy,
     )
 
 
@@ -223,6 +271,15 @@ def offgrid_scores() -> Scores:
         churn_by_kind={},
         loc_by_language={},
         initiatives=(),
+        meeting_minutes=0.0,
+        meeting_count=0,
+        focus_minutes=0.0,
+        ooo_minutes=0.0,
+        recurring_count=0,
+        adhoc_count=0,
+        one_on_one_count=0,
+        group_count=0,
+        meeting_heavy=False,
     )
 
 

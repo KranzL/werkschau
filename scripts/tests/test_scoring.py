@@ -12,6 +12,19 @@ from werkschau.scoring import (
 from .conftest import make_commit
 
 
+def _empty_payload():
+    return {
+        "user": "alice",
+        "level": "l4",
+        "commits": [],
+        "commit_count": 0,
+        "total_churn": 0,
+        "total_heuristic_effort_minutes": 0,
+        "repos_visited": [],
+        "repo_count": 0,
+    }
+
+
 def _payload(commits):
     return {
         "user": "alice",
@@ -144,3 +157,67 @@ def test_cluster_initiatives_drops_merges():
     initiatives = cluster_initiatives(commits)
     assert len(initiatives) == 1
     assert initiatives[0].commit_count == 1
+
+
+def test_calendar_fields_present_in_scores():
+    cal = {
+        "meeting_minutes": 480.0,
+        "meeting_count": 12,
+        "focus_minutes": 120.0,
+        "ooo_minutes": 0.0,
+        "recurring_count": 9,
+        "adhoc_count": 3,
+        "one_on_one_count": 4,
+        "group_count": 8,
+        "window_days": 7,
+    }
+    scores = score_user(_empty_payload(), level="l4", role="swe", window_days=7, calendar=cal)
+    assert scores.meeting_minutes == 480.0
+    assert scores.meeting_count == 12
+    assert scores.recurring_count == 9
+    assert scores.adhoc_count == 3
+    assert scores.one_on_one_count == 4
+    assert scores.group_count == 8
+    assert scores.focus_minutes == 120.0
+    assert scores.recurring_count + scores.adhoc_count == scores.meeting_count
+    assert scores.one_on_one_count + scores.group_count == scores.meeting_count
+
+
+def test_meeting_heavy_above_threshold_7d():
+    cal = {"meeting_minutes": 481.0, "window_days": 7}
+    scores = score_user(_empty_payload(), level="l4", role="swe", window_days=7, calendar=cal)
+    assert scores.meeting_heavy is True
+
+
+def test_meeting_heavy_below_threshold_7d():
+    cal = {"meeting_minutes": 479.0, "window_days": 7}
+    scores = score_user(_empty_payload(), level="l4", role="swe", window_days=7, calendar=cal)
+    assert scores.meeting_heavy is False
+
+
+def test_meeting_heavy_threshold_prorates_with_window():
+    above = {"meeting_minutes": 960.0, "window_days": 14}
+    below = {"meeting_minutes": 959.0, "window_days": 14}
+    scores_above = score_user(_empty_payload(), level="l4", role="swe", window_days=14, calendar=above)
+    scores_below = score_user(_empty_payload(), level="l4", role="swe", window_days=14, calendar=below)
+    assert scores_above.meeting_heavy is True
+    assert scores_below.meeting_heavy is False
+
+
+def test_no_calendar_data_leaves_scores_unchanged():
+    payload = _empty_payload()
+    scores_no_kwarg = score_user(payload, level="l4", role="swe", window_days=7)
+    scores_none = score_user(payload, level="l4", role="swe", window_days=7, calendar=None)
+    assert scores_no_kwarg.output == scores_none.output
+    assert scores_no_kwarg.substance == scores_none.substance
+    assert scores_no_kwarg.inactive == scores_none.inactive
+    assert scores_no_kwarg.substantive_minutes == scores_none.substantive_minutes
+    assert scores_none.meeting_minutes == 0.0
+    assert scores_none.meeting_heavy is False
+
+
+def test_meeting_heavy_does_not_change_inactive_bool():
+    cal = {"meeting_minutes": 1000.0, "window_days": 7}
+    scores = score_user(_empty_payload(), level="l4", role="swe", window_days=7, calendar=cal)
+    assert scores.inactive is True
+    assert scores.meeting_heavy is True

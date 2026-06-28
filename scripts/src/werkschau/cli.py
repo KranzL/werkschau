@@ -541,7 +541,8 @@ def _render_one_report(
             person, pre_extract, since_dt, until_dt,
             max_repos, max_commits_per_repo, include_merges,
         )
-        scores = score_user(user_payload, person.level, person.role, int(window_days))
+        calendar_data = user_payload.get('calendar') or None
+        scores = score_user(user_payload, person.level, person.role, int(window_days), calendar=calendar_data)
 
         if no_narrative:
             narrative = ""

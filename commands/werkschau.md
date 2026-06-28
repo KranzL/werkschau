@@ -290,6 +290,51 @@ ${CLAUDE_PLUGIN_ROOT}/.venv/bin/werkschau extract \
 
 Stream stderr so the user sees discovery progress per person. If a person reports "no authored commits found in window," note it but continue — the report still includes them with a "No commit-visible activity this week." narrative.
 
+## Step 5b: Calendar data (optional)
+
+**AskUserQuestion** with header "Calendar data" and question "Augment this report with Google Calendar meeting load per contributor?":
+- Option 1: "Yes, fetch via Calendar MCP"
+- Option 2: "Skip, no calendar data"
+
+If Option 2, proceed directly to Step 6.
+
+If Option 1:
+
+For each person in the org with a GitHub handle, call the Calendar MCP tool to list all events in the `$SINCE_DATE` to `$UNTIL_DATE` window.
+
+**Classification rules for each event returned:**
+
+EXCLUDE from all counts (accumulate durations separately):
+- All-day events — skip entirely, do not count in any field.
+- Events where this person is the sole attendee — skip entirely.
+- Events titled or categorized as Focus or Deep work — accumulate duration in `focus_minutes`.
+- Events titled or categorized as OOO or Out of office — accumulate duration in `ooo_minutes`.
+
+INCLUDE as a meeting: all other timed events. For each included meeting:
+- `recurring` = event has a recurrence rule or recurrence_id present; `adhoc` = not recurring. These two are exhaustive: `recurring_count + adhoc_count == meeting_count`.
+- `1:1` = exactly 2 total attendees including the organizer; `group` = 3 or more. These two are exhaustive for all included meetings: `one_on_one_count + group_count == meeting_count`.
+- If attendee count is unavailable for an event, classify as `group` (conservative).
+
+**PRIVACY RULE — STRICT:** Store ONLY the nine aggregate numeric fields listed below. Do NOT store event titles, event descriptions, organizer names, attendee names, attendee email addresses, meeting room names, or any per-event string in any field, variable, or intermediate value that is written to disk.
+
+After aggregating all events for a person, the `calendar` object stored for that person contains exactly these nine fields (all numeric):
+
+```
+meeting_minutes   — total scheduled-event duration for included meetings (float)
+meeting_count     — total number of included meetings (int)
+focus_minutes     — total duration of focus/deep-work blocks (float)
+ooo_minutes       — total duration of OOO/out-of-office blocks (float)
+recurring_count   — events that are part of a recurring series (int)
+adhoc_count       — non-recurring (ad-hoc) events (int)
+one_on_one_count  — events with exactly 2 attendees including organizer (int)
+group_count       — events with 3 or more attendees (int)
+window_days       — the report window length in days (int)
+```
+
+After aggregating all people: read `$EXTRACT_PATH`, parse JSON, inject `"calendar": {...}` into each matching user entry (match on `user` field == github handle). Write the augmented JSON back to `$EXTRACT_PATH`.
+
+If the Calendar MCP tool is unavailable, errors for a specific person, or returns no events, omit the `calendar` field for that person and continue. Do not fail the report. Log how many people had calendar data fetched vs. skipped.
+
 ## Step 6: Load extract + org
 
 Read both JSON files via `Read`:

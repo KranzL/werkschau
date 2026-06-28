@@ -17,7 +17,20 @@ You are writing per-person briefs that feed the Werkschau HTML org snapshot. Eac
 
 Top-level: `since`, `until`, `user_count`, `users[]`.
 
-Per user: `user`, `level`, `repos_visited`, `repo_count`, `commit_count`, `total_churn`, `total_heuristic_effort_minutes`, `commits[]`, `inferred_initiatives[]`.
+Per user: `user`, `level`, `repos_visited`, `repo_count`, `commit_count`, `total_churn`, `total_heuristic_effort_minutes`, `commits[]`, `inferred_initiatives[]`, `calendar` (optional — absent when calendar fetch was skipped or on the CLI path).
+
+`calendar` subfields (all aggregate numeric totals; no event titles, attendee names, or emails):
+- `meeting_minutes` — total scheduled-event duration; excludes focus and OOO blocks
+- `meeting_count` — total number of events counted in meeting_minutes
+- `focus_minutes` — total duration of focus/deep-work blocks
+- `ooo_minutes` — total duration of OOO/out-of-office blocks
+- `recurring_count` — events part of a recurring series; `recurring_count + adhoc_count == meeting_count`
+- `adhoc_count` — non-recurring (ad-hoc) events; `recurring_count + adhoc_count == meeting_count`
+- `one_on_one_count` — events with exactly 2 attendees including organizer; `one_on_one_count + group_count == meeting_count`
+- `group_count` — events with 3 or more attendees; `one_on_one_count + group_count == meeting_count`
+- `window_days` — the report window length in days
+
+When `meeting_minutes >= 480 * (max(1, window_days) / 7.0)` (MEETING_HEAVY_MINUTES_PER_WEEK = 480 min/week = 8 hours, prorated), `meeting_heavy` is True and the person is suppressed from the Inactive callout while still plotting bottom-left on the chart.
 
 Per commit in `commits[]`: `sha`, `repo`, `committer_date_utc`, `hour_utc`, `weekday`, `message_first_line`, `additions`, `deletions`, `churn`, `files_changed`, `unique_top_dirs`, `file_paths_sample`, `file_status_counts`, `test_ratio`, `is_merge`, `is_revert`, `is_dependency_bump`, `is_docs_only`, `change_kind` (one of `addition / deletion / refactor / rename / tweak / noise`), `is_substantive`, `heuristic_effort_minutes`, `co_authors`.
 

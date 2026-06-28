@@ -144,6 +144,8 @@ def _is_inactive_for_callout(b: UserBlock) -> bool:
         return False
     if b.person.is_director:
         return False
+    if b.scores.meeting_heavy:
+        return False
     return b.scores.inactive
 
 
@@ -588,6 +590,14 @@ def _card(block: UserBlock, lead: bool) -> str:
         parts.append(
             f'<p class="brief-person-owns"><em>Owns</em> {_html(block.person.description)}</p>'
         )
+    if block.scores.meeting_minutes > 0:
+        parts.append(
+            f'<p class="brief-person-calendar">{block.scores.meeting_minutes:.0f} min in meetings'
+            f' · {block.scores.meeting_count} events'
+            f' ({block.scores.recurring_count} recurring, {block.scores.adhoc_count} ad-hoc;'
+            f' {block.scores.one_on_one_count} one-on-ones, {block.scores.group_count} group)'
+            f' · {block.scores.focus_minutes:.0f} min focus</p>'
+        )
     if summary:
         parts.append(f'<p class="brief-person-summary">{_bold_md(summary)}</p>')
     if bullets:
@@ -854,6 +864,7 @@ td.stack em { font-family: var(--serif); font-style: italic; color: var(--mute);
 .brief-person h3 em { font-style: normal; font-family: var(--sans); font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--mute); margin-left: 8px; font-weight: 600; vertical-align: 1px; }
 .brief-person-owns { font-family: var(--serif); font-size: 13px; line-height: 1.5; color: var(--mute); margin: 0 0 8px; padding: 0; font-style: italic; }
 .brief-person-owns em { font-family: var(--sans); font-style: normal; font-size: 9px; font-weight: 700; letter-spacing: 0.22em; text-transform: uppercase; color: var(--ink); margin-right: 8px; padding: 1px 6px; background: var(--paper-deep); border: 1px solid var(--rule); vertical-align: 1px; }
+.brief-person-calendar { font-family: var(--serif); font-size: 13px; line-height: 1.5; color: var(--mute); margin: 0 0 8px; padding: 0; font-style: italic; }
 .brief-person-summary { font-family: var(--serif); font-size: 15.5px; line-height: 1.55; color: var(--body); margin: 0 0 8px; }
 .brief-person-bullets { font-family: var(--serif); font-size: 14.5px; line-height: 1.55; color: var(--body); margin: 0; padding: 0; list-style: none; }
 .brief-person-bullets li { margin: 0 0 5px; padding-left: 14px; position: relative; }
