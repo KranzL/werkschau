@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 import sys
 import time
@@ -13,6 +14,8 @@ class GhError(RuntimeError):
 
 _MAX_RETRIES = 8
 _MAX_TOTAL_WAIT_SECONDS = 7200
+
+_log = logging.getLogger("werkschau.gh_api")
 
 
 def gh_api(
@@ -31,6 +34,7 @@ def gh_api(
 
     total_wait = 0
     for attempt in range(_MAX_RETRIES):
+        t0 = time.perf_counter()
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         except FileNotFoundError as exc:
@@ -38,6 +42,7 @@ def gh_api(
                 "gh CLI not found on PATH. Install from https://cli.github.com and run `gh auth login`."
             ) from exc
         except subprocess.CalledProcessError as exc:
+            _log.debug("gh_api path=%s status=failed exit=%d duration=%.3fs", path, exc.returncode, time.perf_counter() - t0)
             combined = ((exc.stderr or "") + "\n" + (exc.stdout or "")).strip()
             lower = combined.lower()
             sleep_for = _retry_delay(path, combined, lower, attempt)
@@ -57,6 +62,7 @@ def gh_api(
             time.sleep(sleep_for)
             total_wait += sleep_for
             continue
+        _log.debug("gh_api path=%s status=ok duration=%.3fs", path, time.perf_counter() - t0)
         return _parse_output(result.stdout, paginate)
 
     raise GhError(f"gh api {path}: exceeded {_MAX_RETRIES} retries")
