@@ -315,7 +315,7 @@ INCLUDE as a meeting: all other timed events. For each included meeting:
 - `1:1` = exactly 2 total attendees including the organizer; `group` = 3 or more. These two are exhaustive for all included meetings: `one_on_one_count + group_count == meeting_count`.
 - If attendee count is unavailable for an event, classify as `group` (conservative).
 
-**PRIVACY RULE — STRICT:** Store ONLY the nine aggregate numeric fields listed below. Do NOT store event titles, event descriptions, organizer names, attendee names, attendee email addresses, meeting room names, or any per-event string in any field, variable, or intermediate value that is written to disk.
+**PRIVACY RULE — STRICT:** Store ONLY the nine aggregate numeric fields listed below. Do NOT store event titles, event descriptions, organizer names, attendee names, attendee email addresses, meeting room names, or any per-event string in any field, variable, or intermediate value that is written to disk. Do not repeat, echo, or quote individual event titles, descriptions, attendee names, or attendee email addresses in your response during this step; refer only to counts and aggregate totals.
 
 After aggregating all events for a person, the `calendar` object stored for that person contains exactly these nine fields (all numeric):
 

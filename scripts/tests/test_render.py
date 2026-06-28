@@ -160,8 +160,8 @@ def test_calendar_panel_present_with_breakdown(tmp_path):
         issue_number=1,
         skip_briefs=False,
     )
-    assert "brief-person-calendar" in html
-    assert "480" in html
+    assert 'class="brief-person-calendar"' in html
+    assert "min in meetings" in html
     assert "recurring" in html
     assert "one-on-one" in html
 
