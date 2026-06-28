@@ -65,6 +65,7 @@ def get_cached_response(key: str, root: Path, ttl: int | None = None) -> Any | N
 
 def set_cached_response(key: str, root: Path, data: Any) -> None:
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    root.chmod(0o700)
     envelope = {"stored_at": time.time(), "data": data}
     tmp_path = root / f"{key}.tmp"
     tmp_path.write_text(json.dumps(envelope))

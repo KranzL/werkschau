@@ -129,3 +129,16 @@ def test_set_cached_response_file_mode(tmp_path):
     file_path = root / "permkey.json"
     assert file_path.exists()
     assert stat.S_IMODE(os.stat(file_path).st_mode) == 0o600
+
+
+def test_set_cached_response_dir_mode_new(tmp_path):
+    root = tmp_path / "newdir"
+    set_cached_response("dirkey", root, {"x": 1})
+    assert stat.S_IMODE(os.stat(root).st_mode) == 0o700
+
+
+def test_set_cached_response_dir_mode_preexisting(tmp_path):
+    root = tmp_path / "preexisting"
+    root.mkdir(mode=0o755)
+    set_cached_response("dirkey2", root, {"x": 2})
+    assert stat.S_IMODE(os.stat(root).st_mode) == 0o700
