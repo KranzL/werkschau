@@ -6,6 +6,8 @@ import sys
 import time
 from typing import Any
 
+from .cache import _response_cache_key, _responses_root, get_cached_response, set_cached_response
+
 
 class GhError(RuntimeError):
     pass
@@ -13,6 +15,13 @@ class GhError(RuntimeError):
 
 _MAX_RETRIES = 8
 _MAX_TOTAL_WAIT_SECONDS = 7200
+
+_CACHE_ENABLED: bool = True
+
+
+def disable_cache() -> None:
+    global _CACHE_ENABLED
+    _CACHE_ENABLED = False
 
 
 def gh_api(
@@ -22,11 +31,18 @@ def gh_api(
     fields: dict[str, str] | None = None,
     method: str = "GET",
 ) -> Any:
+    key: str | None = None
+    if method == "GET" and _CACHE_ENABLED:
+        key = _response_cache_key(method, path, paginate, fields)
+        cached = get_cached_response(key, _responses_root())
+        if cached is not None:
+            return cached
+
     cmd = ["gh", "api", "-X", method]
     if paginate:
         cmd.append("--paginate")
-    for key, value in (fields or {}).items():
-        cmd.extend(["-f", f"{key}={value}"])
+    for k, v in (fields or {}).items():
+        cmd.extend(["-f", f"{k}={v}"])
     cmd.append(path)
 
     total_wait = 0
@@ -57,7 +73,10 @@ def gh_api(
             time.sleep(sleep_for)
             total_wait += sleep_for
             continue
-        return _parse_output(result.stdout, paginate)
+        parsed = _parse_output(result.stdout, paginate)
+        if key is not None and _CACHE_ENABLED and parsed is not None and parsed != []:
+            set_cached_response(key, _responses_root(), parsed)
+        return parsed
 
     raise GhError(f"gh api {path}: exceeded {_MAX_RETRIES} retries")
 

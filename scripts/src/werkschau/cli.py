@@ -201,8 +201,13 @@ Two ways to run this:
 
 
 @click.group(help=_GROUP_HELP)
-def main() -> None:
-    pass
+@click.option("--no-cache", is_flag=True, default=False, help="Bypass the on-disk response cache for this run; all GitHub API calls go live.")
+@click.pass_context
+def main(ctx: click.Context, no_cache: bool) -> None:
+    ctx.ensure_object(dict)
+    if no_cache:
+        from .gh_api import disable_cache
+        disable_cache()
 
 
 def _require_llm_api_key(provider: str) -> None:
@@ -985,39 +990,66 @@ def cache() -> None:
 
 @cache.command("info", help="Show diff-cache size and entry count.")
 def cache_info() -> None:
-    from .cache import _cache_root
+    from .cache import _cache_root, _responses_root
 
     root = _cache_root()
-    if not root.exists():
+    if root.exists():
+        entries = list(root.glob("*.json"))
+        total = sum(p.stat().st_size for p in entries)
+        click.echo(f"Diff cache: {root}")
+        click.echo(f"  entries: {len(entries):,}")
+        click.echo(f"  size:    {_humanize(total)}")
+    else:
         click.echo(f"No diff cache at {root}")
-        return
-    entries = list(root.glob("*.json"))
-    total = sum(p.stat().st_size for p in entries)
-    click.echo(f"Diff cache: {root}")
-    click.echo(f"  entries: {len(entries):,}")
-    click.echo(f"  size:    {_humanize(total)}")
+
+    resp_root = _responses_root()
+    if resp_root.exists():
+        resp_entries = list(resp_root.glob("*.json"))
+        resp_total = sum(p.stat().st_size for p in resp_entries)
+        click.echo(f"Response cache: {resp_root}")
+        click.echo(f"  entries: {len(resp_entries):,}")
+        click.echo(f"  size:    {_humanize(resp_total)}")
+    else:
+        click.echo(f"No response cache at {resp_root}")
 
 
 @cache.command("purge", help="Delete diff-cache entries older than --older-than.")
 @click.option("--older-than", default="180d", show_default=True, help="Delete entries with mtime older than this (e.g. 30d, 6m, 1y).")
 @click.option("--dry-run", is_flag=True, default=False, help="Show what would be deleted without deleting.")
 def cache_purge(older_than: str, dry_run: bool) -> None:
-    from .cache import _cache_root
+    from .cache import _cache_root, _responses_root
 
     cutoff = _parse_since(older_than).timestamp()
-    root = _cache_root()
-    if not root.exists():
-        click.echo(f"No diff cache at {root}")
-        return
     deleted = 0
     bytes_freed = 0
-    for path in root.glob("*.json"):
-        st = path.stat()
-        if st.st_mtime < cutoff:
-            bytes_freed += st.st_size
-            deleted += 1
-            if not dry_run:
-                path.unlink(missing_ok=True)
+
+    root = _cache_root()
+    if root.exists():
+        for path in root.glob("*.json"):
+            st = path.stat()
+            if st.st_mtime < cutoff:
+                bytes_freed += st.st_size
+                deleted += 1
+                if not dry_run:
+                    path.unlink(missing_ok=True)
+
+    resp_root = _responses_root()
+    if resp_root.exists():
+        for path in resp_root.glob("*.json"):
+            st = path.stat()
+            ts = st.st_mtime
+            try:
+                parsed = json.loads(path.read_text())
+                if isinstance(parsed, dict) and isinstance(parsed.get("stored_at"), (int, float)):
+                    ts = parsed["stored_at"]
+            except Exception:
+                pass
+            if ts < cutoff:
+                bytes_freed += st.st_size
+                deleted += 1
+                if not dry_run:
+                    path.unlink(missing_ok=True)
+
     verb = "would delete" if dry_run else "deleted"
     click.echo(f"{verb.capitalize()} {deleted:,} entries ({_humanize(bytes_freed)})")
 
